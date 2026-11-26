@@ -203,15 +203,6 @@ def format_lap_time(sec):
     return f"{minutes:02d}:{seconds:02d}.{ms:03d}"
 
 
-def get_ip():
-    try:
-        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=1).stdout.split()
-        out = [a for a in out if ":" not in a]  # tylko IPv4
-        return ", ".join(out) if out else "brak sieci"
-    except Exception:
-        return "?"
-
-
 # ---------------------------------------------------------------------------
 # Dashboard - stan i rysowanie (logika z dotychczasowego skryptu RPi)
 # ---------------------------------------------------------------------------
@@ -429,8 +420,6 @@ class App:
         self.confirm_off_until = 0.0
         self.message = ""
         self.message_until = 0.0
-        self.ip = get_ip()
-        self.ip_time = time.time()
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -551,9 +540,6 @@ class App:
         self.stop_film()
         self.mode = "menu"
         self.active_slider = None
-        if time.time() - self.ip_time > 5:
-            self.ip = get_ip()
-            self.ip_time = time.time()
 
     def go_dash(self):
         self.stop_film()
@@ -955,7 +941,7 @@ class App:
                     self.power_off, color=REDLINE_COLOR, font=font_small, active=confirm)
 
         pc_ok = now - self.last_data < DATA_TIMEOUT
-        status = (f"IP: {self.ip}   |   PC: {'dane OK' if pc_ok else 'brak danych'}   |   "
+        status = (f"PC: {'dane OK' if pc_ok else 'brak danych'}   |   "
                   f"LED: {self.led_state['mode'] if self.led_online else 'ledd nie odpowiada'}")
         s = render_fit(font_tiny, status, SUBTEXT_COLOR, W - 20)
         screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.94))))

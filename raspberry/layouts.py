@@ -804,56 +804,81 @@ def draw_warp(s, d, now, dt):
 # ---------------------------------------------------------------------------
 def draw_scope(s, d, now, dt):
     w, h = s.get_size()
-    scr = pygame.Rect(int(w * 0.03), int(h * 0.05), int(w * 0.68), int(h * 0.88))
+    scr = pygame.Rect(int(w * 0.03), int(h * 0.05), int(w * 0.66), int(h * 0.90))
+    strip = int(h * 0.075)
+    # wykres rysuje się tylko w "plot" - górny i dolny pasek z opisami są zawsze czytelne
+    plot = pygame.Rect(scr.x, scr.y + strip, scr.w, scr.h - 2 * strip)
     green = (80, 255, 140)
+    ch1, ch2 = (255, 220, 60), (60, 210, 255)
+    px = int(w * 0.74)
+    lbl_size = min(h * 0.03, w * 0.018)
+    val_size = min(h * 0.055, w * 0.032)
+    labels = ("CH1  RPM", "CH2  SPEED", "VMAX", "LAP", "LAST", "BEST", "DELTA")
+    step_y = 0.13
 
     def bg(b, w, h):
         b.fill((26, 28, 30))
         pygame.draw.rect(b, (60, 64, 70), scr.inflate(14, 14), border_radius=14)
         pygame.draw.rect(b, (4, 16, 8), scr, border_radius=8)
-        radial_fill(b, scr.center, scr.w * 0.6, (8, 30, 14), (4, 16, 8), 6)
-        b.set_clip(scr)
-        for i in range(1, 10):
-            x = scr.x + scr.w * i // 10
-            pygame.draw.line(b, (16, 60, 30), (x, scr.y), (x, scr.bottom), 1)
-        for i in range(1, 8):
-            y = scr.y + scr.h * i // 8
-            pygame.draw.line(b, (16, 60, 30), (scr.x, y), (scr.right, y), 1)
-        pygame.draw.line(b, (30, 100, 50), (scr.x, scr.centery), (scr.right, scr.centery), 1)
-        pygame.draw.line(b, (30, 100, 50), (scr.centerx, scr.y), (scr.centerx, scr.bottom), 1)
-        for i in range(50):
-            x = scr.x + scr.w * i // 50
-            pygame.draw.line(b, (30, 100, 50), (x, scr.centery - 4), (x, scr.centery + 4), 1)
+        b.set_clip(plot)
+        radial_fill(b, plot.center, plot.w * 0.6, (8, 30, 14), (4, 16, 8), 6)
         b.set_clip(None)
-        px = int(w * 0.75)
-        for i, lbl in enumerate(("CH1  RPM", "CH2  SPEED", "VMAX", "LAP", "LAST", "BEST", "DELTA")):
-            text(b, lbl, "mono", h * 0.03, (140, 150, 150), (px, int(h * (0.06 + i * 0.13))), "topleft")
-        pygame.draw.rect(b, (255, 220, 60), (px - 12, int(h * 0.07), 6, int(h * 0.03)))
-        pygame.draw.rect(b, (60, 210, 255), (px - 12, int(h * 0.20), 6, int(h * 0.03)))
+        for r in (pygame.Rect(scr.x, scr.y, scr.w, strip), pygame.Rect(scr.x, plot.bottom, scr.w, strip)):
+            pygame.draw.rect(b, (2, 10, 5), r, border_radius=8)
+        b.set_clip(plot)
+        for i in range(1, 10):
+            x = plot.x + plot.w * i // 10
+            pygame.draw.line(b, (16, 60, 30), (x, plot.y), (x, plot.bottom), 1)
+        for i in range(1, 8):
+            y = plot.y + plot.h * i // 8
+            pygame.draw.line(b, (16, 60, 30), (plot.x, y), (plot.right, y), 1)
+        pygame.draw.line(b, (30, 100, 50), (plot.x, plot.centery), (plot.right, plot.centery), 1)
+        pygame.draw.line(b, (30, 100, 50), (plot.centerx, plot.y), (plot.centerx, plot.bottom), 1)
+        for i in range(50):
+            x = plot.x + plot.w * i // 50
+            pygame.draw.line(b, (30, 100, 50), (x, plot.centery - 4), (x, plot.centery + 4), 1)
+        b.set_clip(None)
+        pygame.draw.line(b, (30, 100, 50), (plot.x, plot.y), (plot.right, plot.y), 1)
+        pygame.draw.line(b, (30, 100, 50), (plot.x, plot.bottom), (plot.right, plot.bottom), 1)
+        ty = scr.y + strip // 2
+        x = scr.x + 12
+        for col, name in ((ch1, "CH1 RPM"), (ch2, "CH2 SPEED")):
+            pygame.draw.line(b, col, (x, ty), (x + 22, ty), 3)
+            r = text(b, name, "mono", lbl_size, col, (x + 30, ty), "midleft")
+            x = r.right + 24
+        text(b, "1 s/div   TRIG AUTO   RUN", "mono", lbl_size, green, (scr.x + 12, plot.bottom + strip // 2), "midleft")
+        for i, lbl in enumerate(labels):
+            text(b, lbl, "mono", lbl_size, (140, 150, 150), (px, int(h * (0.06 + i * step_y))), "topleft")
+        pygame.draw.rect(b, ch1, (px - 12, int(h * 0.065), 6, int(lbl_size)))
+        pygame.draw.rect(b, ch2, (px - 12, int(h * (0.065 + step_y)), 6, int(lbl_size)))
 
     s.blit(cached_bg("scope", (w, h), bg), (0, 0))
-    s.set_clip(scr)
-    ry = scr.y + scr.h * (1 - clamp(d.redline / d.rpm_max, 0, 1) * 0.9 - 0.05)
-    for x in range(scr.x, scr.right, 14):
-        pygame.draw.line(s, (120, 40, 30), (x, ry), (x + 7, ry), 1)
-    for hist, col in ((d.hist_speed, (60, 210, 255)), (d.hist_rpm, (255, 220, 60))):
+
+    def ypos(v):
+        return plot.y + plot.h * (1 - clamp(v, 0, 1.0) * 0.92 - 0.04)
+
+    s.set_clip(plot)
+    ry = ypos(clamp(d.redline / d.rpm_max, 0, 1))
+    for x in range(plot.x, plot.right, 14):
+        pygame.draw.line(s, (130, 40, 30), (x, ry), (x + 7, ry), 1)
+    for hist, col in ((d.hist_speed, ch2), (d.hist_rpm, ch1)):
         n = len(hist)
         if n > 2:
-            step = scr.w / (hist.maxlen - 1)
-            x0 = scr.right - (n - 1) * step
-            pts = [(x0 + i * step, scr.y + scr.h * (1 - clamp(v, 0, 1.05) * 0.9 - 0.05)) for i, v in enumerate(hist)]
+            step = plot.w / (hist.maxlen - 1)
+            x0 = plot.right - 6 - (n - 1) * step
+            pts = [(x0 + i * step, ypos(v)) for i, v in enumerate(hist)]
             pygame.draw.lines(s, lerp((4, 16, 8), col, 0.35), False, pts, 5)
             pygame.draw.lines(s, col, False, pts, 2)
-            pygame.draw.circle(s, (255, 255, 255), (int(pts[-1][0]) - 3, int(pts[-1][1])), 4)
+            pygame.draw.circle(s, (255, 255, 255), (int(pts[-1][0]), int(pts[-1][1])), 4)
     s.set_clip(None)
-    text(s, "50ms/div   2V/div   TRIG AUTO", "mono", h * 0.028, green, (scr.x + 10, scr.bottom - 8), "bottomleft")
+    if d.rpm_frac >= 0.98 and int(now * 6) % 2 == 0:
+        text(s, "REDLINE", "mono", lbl_size, (255, 80, 60), (scr.right - 12, plot.bottom + strip // 2), "midright")
 
-    px = int(w * 0.75)
-    vals = [(fmt_int(d.rpm), (255, 220, 60)), (f"{fmt_int(d.speed)} {d.unit}", (60, 210, 255)),
+    vals = [(fmt_int(d.rpm), ch1), (f"{fmt_int(d.speed)} {d.unit}", ch2),
             (f"{int(d.vmax)}", green), (str(d.lap), green), (fmt_lap(d.last), green),
             (fmt_lap(d.best), green), (fmt_delta(d.delta), delta_color(d.delta, green, (255, 80, 60), green))]
     for i, (v, col) in enumerate(vals):
-        text(s, v, "mono", h * 0.055, col, (px, int(h * (0.095 + i * 0.13))), "topleft")
+        text(s, v, "mono", val_size, col, (px, int(h * (0.06 + i * step_y) + lbl_size * 1.15)), "topleft")
 
 
 # ---------------------------------------------------------------------------
