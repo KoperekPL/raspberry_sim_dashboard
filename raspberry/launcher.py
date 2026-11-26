@@ -20,6 +20,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -52,7 +53,10 @@ DATA_TIMEOUT = 3.0                    # po tylu sekundach bez danych dashboard p
 FPS = 60                              # dashboard; menu i ustawienia odświeżają się rzadziej
 MENU_FPS = 30
 FILM_PLAYER = "vlc"                   # "vlc" (zalecane na RPi - sprzętowe dekodowanie), "mpv" albo "auto"
-FILM_HANDOFF_DELAY = 2.0              # po ilu s od startu odtwarzacza launcher oddaje mu ekran
+FILM_HANDOFF_DELAY = 2.0              # mpv: po ilu s launcher oddaje ekran
+FILM_HANDOFF_MAX = 30.0               # VLC: launcher czeka, aż film naprawdę gra (max tyle sekund)
+FILM_WARMUP = True                    # przy starcie raz "na próbę" odpal film (małe okno, bez dźwięku)
+VLC_SOCK = "/tmp/pi-launcher-vlc.sock"
 VLC_EXTRA_ARGS = []
 MPV_EXTRA_ARGS = []
 LOG_FILE = os.path.expanduser("~/.cache/pi-launcher.log")
@@ -403,6 +407,9 @@ class App:
         self.film_proc_started = 0.0
         self.film_path = None
         self.film_fails = 0
+        self.film_uses_rc = False
+        self.vlc_rc = True
+        self.last_rc_poll = 0.0
         self.dash_ui_until = 0.0          # przyciski na dashboardzie pokazują się po dotknięciu
         self.last_frame = time.time()
         self.warm_tasks = None
@@ -614,12 +621,12 @@ class App:
                     refresh_screen()
         print(f"Grafika wczytana w {time.perf_counter() - t_start:.1f} s")
 
-    def draw_splash(self, frac):
+    def draw_splash(self, frac, title="WCZYTYWANIE"):
         pygame.event.pump()
         refresh_screen()
         frame = pygame.Surface((W, H))          # najpierw poza ekranem, potem jeden blit
         frame.fill(BG_COLOR)
-        t = font_title.render("WCZYTYWANIE", True, TEXT_COLOR)
+        t = font_title.render(title, True, TEXT_COLOR)
         frame.blit(t, t.get_rect(center=(W // 2, int(H * 0.42))))
         bar = pygame.Rect(int(W * 0.2), int(H * 0.55), int(W * 0.6), int(H * 0.035))
         pygame.draw.rect(frame, DIAL_BG, bar, border_radius=bar.h // 2)
@@ -632,45 +639,67 @@ class App:
     # ----- wstępne wczytanie filmu i VLC do RAM (pierwsze uruchomienie filmu bez czekania) -----
     def preload_media(self):
         self.warm_player = None
+        videos = [os.path.join(VIDEO_DIR, f) for f in self.scan_videos()]
 
         def fadvise(path):
             try:
                 fd = os.open(path, os.O_RDONLY)
                 try:
-                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_WILLNEED)   # jądro czyta plik do RAM w tle
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_WILLNEED)
                 finally:
                     os.close(fd)
             except OSError:
                 pass
 
-        def work():
+        def read_all():
+            # Biblioteki VLC: prośba do jądra o wczytanie. Filmy: faktyczne przeczytanie całych plików do RAM.
             t0 = time.time()
-            videos = [os.path.join(VIDEO_DIR, f) for f in self.scan_videos()]
-            for v in videos:
-                fadvise(v)
             libs = []
             for pattern in ("/usr/lib/*/vlc/**", "/usr/lib/vlc/**", "/usr/lib/*/libvlc*.so*",
                             "/usr/lib/*/libav*.so*", "/usr/lib/*/libsw*.so*", "/usr/lib/*/libplacebo*.so*",
                             "/usr/bin/vlc", "/usr/bin/cvlc"):
-                libs += glob.glob(pattern, recursive=True)
+                libs += [f for f in glob.glob(pattern, recursive=True) if os.path.isfile(f)]
             for f in libs:
-                if os.path.isfile(f):
-                    fadvise(f)
-            # Raz uruchom VLC bez obrazu i dźwięku - ładuje wtyczki i dekoder, potem start filmu jest natychmiastowy
-            vlc = shutil.which("cvlc")
-            if vlc and videos and FILM_PLAYER != "mpv" and self.film_proc is None:
+                fadvise(f)
+            total = 0
+            for v in videos:
                 try:
-                    self.warm_player = subprocess.Popen(
-                        [vlc, "-I", "dummy", "--vout", "dummy", "--aout", "dummy", "--no-video-title-show",
-                         "--run-time=2", "--play-and-exit", videos[0]],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        preexec_fn=lambda: os.nice(10))
-                    self.warm_player.wait(timeout=20)
-                except Exception:
-                    self.kill_warm_player()
-            print(f"Film/VLC wczytane do RAM w {time.time() - t0:.1f} s ({len(videos)} filmów, {len(libs)} plików VLC)")
+                    with open(v, "rb", buffering=0) as fh:
+                        while True:
+                            chunk = fh.read(8 << 20)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                except OSError:
+                    pass
+            print(f"W RAM: {len(videos)} filmów ({total >> 20} MB) + {len(libs)} plików VLC, {time.time() - t0:.1f} s")
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=read_all, daemon=True).start()
+
+        # Próbne uruchomienie filmu - dokładnie tą samą drogą co prawdziwe (obraz przez GPU, czcionki,
+        # dekoder), tylko w małym okienku i bez dźwięku. Po tym pierwsze odpalenie filmu jest natychmiastowe.
+        vlc = shutil.which("cvlc")
+        if not (FILM_WARMUP and vlc and videos and FILM_PLAYER != "mpv"):
+            return
+        t0 = time.time()
+        try:
+            self.warm_player = subprocess.Popen(
+                [vlc, "--no-audio", "--no-fullscreen", "--no-autoscale", "--width=64", "--height=36",
+                 "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0",
+                 "--run-time=4", "--play-and-exit", videos[0]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            print(f"Próbny start VLC nieudany: {e}")
+            return
+        while self.warm_player.poll() is None and time.time() - t0 < 45:
+            try:
+                self.draw_splash(min(0.98, (time.time() - t0) / 12.0), "PRZYGOTOWANIE FILMU")
+            except pygame.error:
+                refresh_screen()
+            self.poll_udp(time.time())
+            time.sleep(0.1)
+        self.kill_warm_player()
+        print(f"Próbny start filmu: {time.time() - t0:.1f} s")
 
     def kill_warm_player(self):
         proc = getattr(self, "warm_player", None)
@@ -742,6 +771,13 @@ class App:
                 args.append("--play-and-exit")
             if FILM_MUTE:
                 args.append("--no-audio")
+            if self.vlc_rc:
+                # zdalne sterowanie: launcher pyta VLC, czy film już gra (wtedy dopiero chowa swoje okno)
+                try:
+                    os.unlink(VLC_SOCK)
+                except OSError:
+                    pass
+                args += ["--extraintf", "oldrc", "--rc-unix", VLC_SOCK, "--rc-fake-tty"]
             return args + VLC_EXTRA_ARGS + [path]
         if mpv:
             args = [mpv, "--fs", "--no-osc", "--no-osd-bar", "--cursor-autohide=always",
@@ -766,18 +802,43 @@ class App:
             return
         self.film_path = path
         self.film_fails = 0
-        # Launcher na razie zostaje (czarny ekran "Ładowanie"), żeby nie było widać pulpitu.
-        # Po FILM_HANDOFF_DELAY zamyka swoje okno, a odtwarzacz ma cały ekran dla siebie.
+        # Launcher zostaje (czarny ekran "Ładowanie"), dopóki VLC naprawdę nie gra - pulpit nie mignie.
+        # Potem zamyka swoje okno, a odtwarzacz ma cały ekran dla siebie.
         self.film_started = time.time()
         self.film_name = os.path.basename(path)
         self.mode = "film_play"
         self.touch = TouchWatcher()
         print(f"Film: {' '.join(args)}")
 
+    def vlc_time(self):
+        """Czas odtwarzania z VLC [s] albo None, jeśli VLC jeszcze nie odpowiada."""
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+                c.settimeout(0.25)
+                c.connect(VLC_SOCK)
+                c.sendall(b"get_time\n")
+                data = b""
+                end = time.time() + 0.25
+                while time.time() < end:
+                    try:
+                        chunk = c.recv(256)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    data += chunk
+                    if re.search(rb"(?m)^[> ]*\d+\s*$", data):
+                        break
+                nums = re.findall(rb"(?m)^[> ]*(\d+)\s*$", data)
+                return int(nums[-1]) if nums else None
+        except OSError:
+            return None
+
     def spawn_player(self, args):
         try:
             self.film_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.film_proc_started = time.time()
+            self.film_uses_rc = "--rc-unix" in args
             return True
         except OSError as e:
             self.toast(f"Nie można uruchomić filmu: {e}")
@@ -821,6 +882,9 @@ class App:
             # użytkownik), od razu startujemy film od nowa - bez wracania do menu.
             if FILM_LOOP and self.mode == "film_play" and self.film_path:
                 self.film_fails = self.film_fails + 1 if ran < 3.0 else 0
+                if self.film_uses_rc and ran < 2.0 and self.vlc_rc:
+                    print("VLC nie przyjął opcji sterowania - uruchamiam bez nich")
+                    self.vlc_rc = False
                 if self.film_fails < 3:
                     args = self.player_command(self.film_path)
                     if args and self.spawn_player(args):
@@ -1153,8 +1217,24 @@ class App:
                     print("Film zatrzymany dotknięciem")
                     self.go_menu()
                     continue
-                if not self.display_released and now - self.film_started >= FILM_HANDOFF_DELAY:
-                    self.release_display()
+                if not self.display_released:
+                    elapsed = now - self.film_started
+                    ready = False
+                    if self.film_uses_rc:
+                        if elapsed > 0.4 and now - self.last_rc_poll > 0.3:
+                            self.last_rc_poll = now
+                            t = self.vlc_time()
+                            ready = t is not None and t >= 1
+                        if elapsed > 5.0 and not os.path.exists(VLC_SOCK):
+                            print("VLC bez gniazda sterowania - oddaję ekran bez czekania")
+                            self.vlc_rc = False
+                            ready = True
+                        ready = ready or elapsed >= FILM_HANDOFF_MAX
+                    else:
+                        ready = elapsed >= FILM_HANDOFF_DELAY
+                    if ready:
+                        print(f"Film gra - launcher oddaje ekran po {elapsed:.1f} s")
+                        self.release_display()
 
             if self.display_released:
                 # film gra na całym ekranie - launcher tylko nasłuchuje komend i dotyku, nic nie rysuje
@@ -1197,7 +1277,7 @@ class App:
 
             if self.mode in ("menu", "led", "film_list"):
                 self.warm_step()           # w wolnych chwilach przygotuj dashboard i miniatury
-            clock.tick(FPS if self.mode == "dash" else MENU_FPS)
+            clock.tick(FPS if self.mode == "dash" else 10 if self.mode == "film_play" else MENU_FPS)
 
         self.stop_film()
         self.led_flush(time.time(), force=True)

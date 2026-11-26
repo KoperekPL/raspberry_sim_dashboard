@@ -151,7 +151,12 @@ ledd, port **5006**:
 
 Film odtwarza **VLC** z tymi samymi parametrami co wcześniejszy skrypt filmu. VLC w Raspberry Pi OS jest przygotowane pod sprzętowe dekodowanie na RPi. Po wybraniu filmu przez około 2 sekundy widać czarny ekran „Ładowanie filmu…”, potem launcher oddaje odtwarzaczowi cały ekran.
 
-Przy starcie aplikacji launcher w tle wczytuje do RAM pliki filmów i biblioteki VLC oraz raz uruchamia VLC bez obrazu i dźwięku. Dzięki temu już pierwsze odpalenie filmu jest tak szybkie jak kolejne. Wszystkie tarcze i ekrany renderują się raz na ekranie „WCZYTYWANIE” z paskiem postępu, więc dashboard i wybór ekranów otwierają się bez czekania.
+Przy starcie aplikacji, na ekranie „WCZYTYWANIE” / „PRZYGOTOWANIE FILMU”, launcher wczytuje wszystko do RAM:
+- renderuje wszystkie tarcze i ekrany,
+- w tle czyta całe pliki filmów,
+- raz uruchamia film na próbę w małym okienku bez dźwięku (`FILM_WARMUP`). Dzięki temu wczytuje się cały VLC: wtyczki, dekoder, wyświetlanie przez GPU i czcionki.
+
+Po wybraniu filmu czarny ekran „Ładowanie filmu…” zostaje, dopóki VLC naprawdę nie zacznie odtwarzać (launcher pyta o to VLC przez gniazdo `oldrc`). Dzięki temu nigdy nie widać pulpitu.
 
 Film zawsze się zapętla. VLC dostaje `--loop --input-repeat`, a dodatkowo launcher sam uruchamia film od nowa, gdyby odtwarzacz się zamknął. Wyłącza to tylko `FILM_LOOP = False`.
 
