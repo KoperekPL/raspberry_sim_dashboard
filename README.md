@@ -11,7 +11,7 @@ Po włączeniu RPi pokazuje się menu: **DASHBOARD / FILM / LEDY**. Filmy i LEDy
 | | Raspberry Pi (`raspberry/`) | PC z Windows (`pc/`) |
 |---|---|---|
 | Menu startowe | `launcher.py` (autostart po zalogowaniu) | – |
-| Dashboard | rysowany w `launcher.py` + tarcze z `themes.py`, dane UDP :5005 | `DASHBOARD.py` czyta HydroSim i wysyła telemetrię |
+| Dashboard | `launcher.py` + tarcze (`themes.py`) i pełne ekrany (`layouts.py`), dane UDP :5005 | `DASHBOARD.py` czyta HydroSim i wysyła telemetrię |
 | Film | `launcher.py` + `mpv`, pliki z `~/filmy` | `FILM.py` – opcjonalny pilot |
 | LEDy | `ledd.py` – usługa systemd, działa od startu | `LED.py` – opcjonalne sterowanie z konsoli |
 
@@ -37,6 +37,13 @@ cd raspberry_sim_dashboard/raspberry
 bash install.sh        # bez sudo
 sudo reboot
 ```
+
+Bez gita (instalacja albo aktualizacja):
+```bash
+cd ~ && wget -O rsd.zip https://github.com/KoperekPL/raspberry_sim_dashboard/archive/refs/heads/main.zip
+unzip -o rsd.zip && cd raspberry_sim_dashboard-main/raspberry && bash install.sh
+```
+Jeśli `git` albo `wget` zgłasza błąd certyfikatu, sprawdź datę na RPi (`date`). Jeśli jest zła, ustaw ją: `sudo timedatectl set-ntp true` albo `sudo date -s "2026-11-26 14:30"`.
 
 Skrypt instalacyjny:
 - instaluje `python3-pygame`, `python3-spidev` i `mpv`,
@@ -72,18 +79,47 @@ Działa na Pi 3, 4 i 5. Używa SPI, więc nie potrzebuje roota i nie koliduje z 
 
 W każdym skrypcie ustaw `RPI_IP`. Zapora Windows musi przepuszczać wychodzące UDP (zwykle przepuszcza).
 
+## Ekrany dashboardu
+
+Do wyboru jest 20 skórek, podzielonych na dwie zakładki:
+- **TARCZE**: klasyczne dwa zegary w 10 stylach,
+- **EKRANY**: 10 pełnoekranowych układów.
+
+Wyboru dokonujesz:
+- w menu przyciskiem **TARCZE**,
+- na dashboardzie po dotknięciu ekranu: pojawiają się przyciski **< MENU / NASTĘPNY / EKRAN**, które chowają się po 4 sekundach,
+- z PC: ustaw `THEME` w `DASHBOARD.py` albo wyślij `{"cmd": "theme", "name": "warp"}` (zamiast nazwy możesz podać `"next"` lub `"prev"`).
+
+Wybór zapisuje się w `~/.config/pi-launcher/settings.json`.
+
+### Pełne ekrany
+
+![ekrany](docs/screens.png)
+
+| Nazwa | Opis |
+|---|---|
+| **PROLINE** (`proline`) | wyświetlacz wyścigowy: shift-light, półokrągły obrotomierz, pasy z czasami, linia info |
+| **F1** (`f1`) | ekran z kierownicy: 15 diod (zielone/czerwone/niebieskie), delta, pasek RPM |
+| **ENDURANCE** (`endurance`) | prototyp LMP: pasek obrotów na całą szerokość, ogromna prędkość, 6 kafli z danymi |
+| **HUD** (`hud`) | wyświetlacz przezierny myśliwca: przewijane taśmy prędkości i obrotów, celownik, „>> SHIFT <<” |
+| **SYNTHWAVE** (`synthwave`) | neonowy zachód słońca, siatka pędzi z prędkością łodzi, przy redline zmienia kolor |
+| **ORBITA** (`orbit`) | planeta rozgrzewa się z obrotami, księżyce krążą z prędkością RPM i MPH, pierścień postępu okrążenia |
+| **LAWA** (`lava`) | pulsujący blob, który rośnie, faluje i czerwienieje z obrotami, a satelita pokazuje prędkość |
+| **MATRIX** (`matrix`) | deszcz znaków pada szybciej przy większej prędkości, przy redline robi się czerwony |
+| **WARP** (`warp`) | skok w nadprzestrzeń, gwiazdy wydłużają się z prędkością |
+| **OSCYLOSKOP** (`scope`) | ostatnie 10 s obrotów i prędkości jako przebiegi na ekranie CRT |
+
+![wybór ekranu](docs/picker_screens.png)
+
+Numer okrążenia, deltę (ostatnie okrążenie minus najlepsze), prędkość maksymalną i czas sesji liczy RPi. Gaz i pozycję `DASHBOARD.py` wysyła tylko wtedy, gdy SDK je udostępnia. Jeśli nie, w ich miejscu pojawia się „--” albo inne dane.
+
+Nowy ekran dodajesz, pisząc funkcję `draw_xxx(surf, d, now, dt)` w `layouts.py` i dopisując ją do `LAYOUTS`. Tło rysuj przez `cached_bg`, a co klatkę tylko zmienne elementy.
+
 ## Tarcze zegarów
 
 Do wyboru jest 10 tarcz: **NOWOCZESNA, VINTAGE, KLASYCZNA, SPORT, MARINE, RETRO NEON, CARBON, CYFROWA, MINIMAL, NOCNA**.
 
 ![tarcze](docs/themes.png)
-
-Tarczę zmieniasz:
-- w menu przyciskiem **TARCZE**,
-- w dashboardzie przyciskiem **TARCZA** (prawy dolny róg),
-- z PC: ustaw `THEME = "vintage"` w `DASHBOARD.py` albo wyślij `{"cmd": "theme", "name": "vintage"}` (zamiast nazwy możesz podać `"next"` lub `"prev"`).
-
-Wybór zapisuje się w `~/.config/pi-launcher/settings.json`.
 
 ![wybór tarczy](docs/picker.png)
 
@@ -102,7 +138,8 @@ Launcher, port **5005**:
 {"rpm": 6500, "max_rpm": 9000, "speed": 87, "unit": "MPH", "current_lap": 42.3, "last_lap": 61.2, "best_lap": 60.9}
 {"cmd": "mode", "mode": "dashboard"}            // też "film" (+ opcjonalnie "file") i "menu"
 {"cmd": "stop", "mode": "dashboard"}            // wraca do menu tylko, jeśli ten tryb jest aktywny
-{"cmd": "theme", "name": "vintage"}             // albo "next" / "prev"
+{"cmd": "theme", "name": "vintage"}             // nazwa tarczy/ekranu albo "next" / "prev"
+// opcjonalne pola w pakiecie telemetrii: "throttle" (0..1), "position", "lap"
 ```
 ledd, port **5006**:
 ```json
@@ -110,6 +147,16 @@ ledd, port **5006**:
 {"cmd": "rpm", "rpm": 7200, "redline": 9000}
 {"cmd": "get"}                                  // odpowiedź: {"state": {...}}
 ```
+
+## Film się tnie?
+
+Na czas filmu launcher całkowicie zwalnia ekran, więc mpv ma go tylko dla siebie. Jeśli film nadal nie jest płynny:
+- **Pi 5 nie ma sprzętowego dekodera H.264**, jest tylko dla H.265/HEVC. Film 1080p H.264 Pi 5 zdekoduje programowo, ale 4K już nie. Najpewniej będzie przekodować film na PC do H.265:
+  `ffmpeg -i film.mp4 -c:v libx265 -crf 24 -preset medium -vf scale=-2:1080 -c:a aac film_hevc.mp4`
+  albo przynajmniej zmniejszyć rozdzielczość do rozdzielczości ekranu.
+- Na Pi 4 najlepiej działa H.264 do 1080p.
+- W `launcher.py` jest opcja `MPV_EXTRA_ARGS`, np. `["--vo=gpu-next"]` albo `["--hwdec=no"]`.
+- Test ręczny na RPi: `mpv --fs --hwdec=auto-safe ~/filmy/film.mp4`. Jeśli tak też się tnie, problemem jest plik albo sterowniki, a nie launcher.
 
 ## Diagnostyka
 
