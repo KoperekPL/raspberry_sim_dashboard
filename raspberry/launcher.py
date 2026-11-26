@@ -392,6 +392,9 @@ class App:
         self.display_released = False
         self.touch = None
         self.film_started = 0.0
+        self.film_proc_started = 0.0
+        self.film_path = None
+        self.film_fails = 0
         self.dash_ui_until = 0.0          # przyciski na dashboardzie pokazują się po dotknięciu
         self.last_frame = time.time()
         self.warm_tasks = None
@@ -713,7 +716,11 @@ class App:
         use_vlc = vlc and (FILM_PLAYER in ("vlc", "auto") or not mpv)
         if use_vlc:
             args = [vlc, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0"]
-            args.append("--loop" if FILM_LOOP else "--play-and-exit")
+            if FILM_LOOP:
+                # --input-repeat: ten sam plik od nowa w tym samym oknie (bez zamykania obrazu)
+                args += ["--loop", "--input-repeat=65535"]
+            else:
+                args.append("--play-and-exit")
             if FILM_MUTE:
                 args.append("--no-audio")
             return args + VLC_EXTRA_ARGS + [path]
@@ -721,7 +728,7 @@ class App:
             args = [mpv, "--fs", "--no-osc", "--no-osd-bar", "--cursor-autohide=always",
                     f"--input-conf={MPV_INPUT_CONF}"]
             if FILM_LOOP:
-                args.append("--loop=inf")
+                args.append("--loop-file=inf")
             if FILM_MUTE:
                 args.append("--no-audio")
             return args + MPV_EXTRA_ARGS + [path]
@@ -735,12 +742,11 @@ class App:
             self.go_menu()
             self.toast("Brak odtwarzacza (sudo apt install vlc)")
             return
-        try:
-            self.film_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as e:
+        if not self.spawn_player(args):
             self.go_menu()
-            self.toast(f"Nie można uruchomić filmu: {e}")
             return
+        self.film_path = path
+        self.film_fails = 0
         # Launcher na razie zostaje (czarny ekran "Ładowanie"), żeby nie było widać pulpitu.
         # Po FILM_HANDOFF_DELAY zamyka swoje okno, a odtwarzacz ma cały ekran dla siebie.
         self.film_started = time.time()
@@ -748,6 +754,15 @@ class App:
         self.mode = "film_play"
         self.touch = TouchWatcher()
         print(f"Film: {' '.join(args)}")
+
+    def spawn_player(self, args):
+        try:
+            self.film_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.film_proc_started = time.time()
+            return True
+        except OSError as e:
+            self.toast(f"Nie można uruchomić filmu: {e}")
+            return False
 
     def release_display(self):
         if not self.display_released:
@@ -781,7 +796,18 @@ class App:
 
     def check_film(self):
         if self.film_proc is not None and self.film_proc.poll() is not None:
+            ran = time.time() - self.film_proc_started
             self.film_proc = None
+            # Pętla pilnowana przez launcher: jeśli odtwarzacz sam się zamknął (a nie zatrzymał go
+            # użytkownik), od razu startujemy film od nowa - bez wracania do menu.
+            if FILM_LOOP and self.mode == "film_play" and self.film_path:
+                self.film_fails = self.film_fails + 1 if ran < 3.0 else 0
+                if self.film_fails < 3:
+                    args = self.player_command(self.film_path)
+                    if args and self.spawn_player(args):
+                        print(f"Film zapętlony (odtwarzacz zamknął się po {ran:.0f} s)")
+                        return
+                self.toast("Nie można odtworzyć filmu - sprawdź plik")
             self.stop_film()                  # zamyka czytnik dotyku i przywraca okno launchera
             if self.mode == "film_play":
                 self.mode = "menu"

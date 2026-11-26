@@ -153,6 +153,8 @@ Film odtwarza **VLC** z tymi samymi parametrami co wcześniejszy skrypt filmu. V
 
 Przy starcie aplikacji launcher w tle wczytuje do RAM pliki filmów i biblioteki VLC oraz raz uruchamia VLC bez obrazu i dźwięku. Dzięki temu już pierwsze odpalenie filmu jest tak szybkie jak kolejne. Wszystkie tarcze i ekrany renderują się raz na ekranie „WCZYTYWANIE” z paskiem postępu, więc dashboard i wybór ekranów otwierają się bez czekania.
 
+Film zawsze się zapętla. VLC dostaje `--loop --input-repeat`, a dodatkowo launcher sam uruchamia film od nowa, gdyby odtwarzacz się zamknął. Wyłącza to tylko `FILM_LOOP = False`.
+
 Film zamykasz podwójnym dotknięciem ekranu albo klawiszem ESC. Launcher czyta dotyk bezpośrednio z `/dev/input` (`python3-evdev`, grupa `input`).
 
 Ustawienia na górze `launcher.py`:
