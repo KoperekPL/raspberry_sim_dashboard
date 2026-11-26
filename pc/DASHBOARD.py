@@ -16,6 +16,7 @@ SEND_HZ = 60
 # Tarcza zegarów ustawiana przy starcie (puste = zostaw tę wybraną na RPi).
 # Tarcze: modern, vintage, classic, sport, marine, neon, carbon, digital, minimal, night
 # Ekrany: proline, f1, endurance, hud, synthwave, orbit, lava, matrix, warp, scope
+# Dziwne: eye, snake, heart, dali, glitch
 THEME = ""
 
 # Jeśli prędkość na zegarze będzie ok. 2.24x mniejsza niż na HUD w grze,

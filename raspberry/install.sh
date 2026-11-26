@@ -22,7 +22,7 @@ if [ -n "$VCG" ]; then sudo "$VCG" "$(dirname "$VCG")/plugins" || true; fi
 
 echo "==> Pliki -> $DEST"
 mkdir -p "$DEST" "$HOME/filmy"
-cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/layouts.py" "$SRC/ledd.py" "$SRC/run.sh" "$DEST/"
+cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/layouts.py" "$SRC/weird.py" "$SRC/ledd.py" "$SRC/run.sh" "$DEST/"
 [ -f "$SRC/../pc/LED.py" ] && cp "$SRC/../pc/LED.py" "$DEST/" || true   # LED.py przyda się też na samym RPi
 chmod +x "$DEST/"*.py "$DEST/run.sh"
 

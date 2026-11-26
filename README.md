@@ -85,9 +85,10 @@ W `DASHBOARD.py` i `LED.py` ustaw `RPI_IP` (domyślnie `192.168.0.112`). Zapora 
 
 ## Ekrany dashboardu
 
-Do wyboru jest 20 skórek, podzielonych na dwie zakładki:
-- **TARCZE**: klasyczne dwa zegary w 10 stylach,
-- **EKRANY**: 10 pełnoekranowych układów.
+Do wyboru jest 25 skórek w trzech zakładkach:
+- **TARCZE**: klasyczne dwa zegary w 10 stylach. Przycisk **CZASY: WŁ/WYŁ** chowa pasek czasów okrążeń, a wtedy zegary są większe i wyśrodkowane,
+- **EKRANY**: 10 pełnoekranowych układów,
+- **DZIWNE**: 5 kompletnie pojechanych zegarów.
 
 Wyboru dokonujesz:
 - w menu przyciskiem **TARCZE**,
@@ -118,6 +119,18 @@ Wybór zapisuje się w `~/.config/pi-launcher/settings.json`.
 Numer okrążenia, deltę (ostatnie okrążenie minus najlepsze), prędkość maksymalną i czas sesji liczy RPi. Gaz i pozycję `DASHBOARD.py` wysyła tylko wtedy, gdy SDK je udostępnia. Jeśli nie, w ich miejscu pojawia się „--” albo inne dane.
 
 Nowy ekran dodajesz, pisząc funkcję `draw_xxx(surf, d, now, dt)` w `layouts.py` i dopisując ją do `LAYOUTS`. Tło rysuj przez `cached_bg`, a co klatkę tylko zmienne elementy.
+
+### Dziwne
+
+![dziwne](docs/weird.png)
+
+| Nazwa | Opis |
+|---|---|
+| **OKO** (`eye`) | gałka oczna: źrenica rozszerza się z obrotami, oko rozgląda się tym szybciej, im szybciej płyniesz, nabiega krwią i mruga, a przy redline drga i mówi „WIDZĘ CIĘ” |
+| **WĄŻ** (`snake`) | długość węża = prędkość, wicie się = obroty, cyfry RPM wytatuowane na ciele, przy redline czerwienieje i wysuwa język |
+| **SERCE** (`heart`) | tętno = RPM/50, EKG na dole, „ciśnienie” z prędkości, przy redline „TACHYKARDIA!” |
+| **ZEGAR DALEGO** (`dali`) | topniejący zegar na pustyni: tarcza, cyfry i wskazówki spływają tym bardziej, im wyższe obroty |
+| **GLITCH** (`glitch`) | uszkodzony ekran: przesunięte kanały RGB, porwane paski i śmieci w pamięci rosną z obrotami, przy redline „FATAL ERROR” |
 
 ## Tarcze zegarów
 

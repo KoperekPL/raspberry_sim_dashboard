@@ -47,6 +47,7 @@ except ImportError:
 
 import layouts as Lay
 import themes as T
+import weird as Wd
 
 # ===================== KONFIGURACJA =====================
 UDP_PORT = 5005                       # telemetria + komendy z PC
@@ -174,22 +175,33 @@ font_small = T.get_font("sans", H * 0.036)
 font_tiny = T.get_font("sans", H * 0.028, bold=False)
 
 SKINS = [(t["name"], t["label"], "gauge") for t in T.THEMES] + \
-        [(l["name"], l["label"], "layout") for l in Lay.LAYOUTS]
+        [(l["name"], l["label"], "layout") for l in Lay.LAYOUTS] + \
+        [(x["name"], x["label"], "weird") for x in Wd.WEIRD]
+SKIN_KIND = {n: k for n, _, k in SKINS}
+FULLSCREEN_DRAW = {**{l["name"]: l["draw"] for l in Lay.LAYOUTS}, **{x["name"]: x["draw"] for x in Wd.WEIRD}}
+SHOW_TIMES = [True]     # ustawienie "czasy na tarczach" (lista = zmienna współdzielona z App)
 SKIN_NAMES = [n for n, _, _ in SKINS]
 SKIN_LABEL = {n: lbl for n, lbl, _ in SKINS}
 
 
-def render_skin(surf, name, view, now, dt):
+def render_skin(surf, name, view, now, dt, show_times=None):
     """Rysuje cały ekran dashboardu (tarcza lub pełny ekran) na dowolnej powierzchni."""
-    if name in Lay.LAYOUT_BY_NAME:
-        Lay.LAYOUT_BY_NAME[name]["draw"](surf, view, now, dt)
+    if name in FULLSCREEN_DRAW:
+        FULLSCREEN_DRAW[name](surf, view, now, dt)
         return
+    if show_times is None:
+        show_times = SHOW_TIMES[0]
     th = T.get_theme(name)
     w, h = surf.get_size()
     surf.fill(th["bg"])
-    T.draw_timing_bar(surf, th, view.cur, view.last, view.best, format_lap_time)
-    radius = int(min(w * 0.21, h * 0.38))
-    cy = int(h * 0.56)
+    if show_times:
+        T.draw_timing_bar(surf, th, view.cur, view.last, view.best, format_lap_time)
+        radius = int(min(w * 0.21, h * 0.38))
+        cy = int(h * 0.56)
+    else:
+        # bez paska czasów: większe zegary, wyśrodkowane w pionie
+        radius = int(min(w * 0.22, h * 0.43))
+        cy = int(h * 0.50)
     T.draw_gauge(surf, th, int(w * 0.26), cy, radius, view.rpm, view.rpm_max, "RPM",
                  view.rpm_step, redline=view.redline, kind="rpm", divide=1000)
     T.draw_gauge(surf, th, int(w * 0.74), cy, radius, view.speed, view.speed_max, view.unit,
@@ -476,7 +488,8 @@ class App:
         skin = self.settings.get("theme", T.DEFAULT_THEME)
         self.skin = skin if skin in SKIN_NAMES else T.DEFAULT_THEME
         self.themes_return = "menu"
-        self.themes_tab = "layout" if self.skin in Lay.LAYOUT_BY_NAME else "gauge"
+        SHOW_TIMES[0] = bool(self.settings.get("show_times", True))
+        self.themes_tab = SKIN_KIND.get(self.skin, "gauge")
         self.thumbs = {}
         self.sample = Lay.sample_view()
         self.display_released = False
@@ -659,7 +672,7 @@ class App:
 
     def open_themes(self, back):
         self.themes_return = back
-        self.themes_tab = "layout" if self.skin in Lay.LAYOUT_BY_NAME else "gauge"
+        self.themes_tab = SKIN_KIND.get(self.skin, "gauge")
         self.mode = "themes"
 
     def set_theme(self, name, close=False):
@@ -838,8 +851,17 @@ class App:
         th = int(tw * H / W)
         return tw, th
 
+    def toggle_times(self):
+        SHOW_TIMES[0] = not SHOW_TIMES[0]
+        self.settings["show_times"] = SHOW_TIMES[0]
+        save_settings(self.settings)
+        print(f"Czasy na tarczach: {'wł' if SHOW_TIMES[0] else 'wył'}")
+
+    def thumb_key(self, name, tw, th):
+        return (name, tw, th, SHOW_TIMES[0] if SKIN_KIND.get(name) == "gauge" else None)
+
     def get_thumb(self, name, tw, th):
-        key = (name, tw, th)
+        key = self.thumb_key(name, tw, th)
         surf = self.thumbs.get(key)
         if surf is None:
             # render w połowie rozdzielczości ekranu i pomniejszenie -> miniatura wygląda jak prawdziwy ekran
@@ -1287,11 +1309,18 @@ class App:
         m = int(W * 0.03)
         self.button((m, int(H * 0.02), int(W * 0.15), int(H * 0.095)), "< WSTECZ",
                     lambda: setattr(self, "mode", self.themes_return), font=font_small)
-        tabw = int(W * 0.24)
-        for i, (tab, label) in enumerate((("gauge", "TARCZE"), ("layout", "EKRANY"))):
-            self.button((W // 2 - tabw + i * (tabw + 8), int(H * 0.02), tabw, int(H * 0.095)), label,
+        tabw = int(W * 0.17)
+        tabs = (("gauge", "TARCZE"), ("layout", "EKRANY"), ("weird", "DZIWNE"))
+        tx0 = (W - (len(tabs) * tabw + (len(tabs) - 1) * 8)) // 2
+        for i, (tab, label) in enumerate(tabs):
+            self.button((tx0 + i * (tabw + 8), int(H * 0.02), tabw, int(H * 0.095)), label,
                         lambda t=tab: setattr(self, "themes_tab", t), color=ACCENT_BLUE,
                         active=(self.themes_tab == tab), font=font_small)
+        if self.themes_tab == "gauge":
+            on = SHOW_TIMES[0]
+            self.button((W - m - int(W * 0.15), int(H * 0.02), int(W * 0.15), int(H * 0.095)),
+                        "CZASY: WŁ" if on else "CZASY: WYŁ", self.toggle_times,
+                        color=BEST_COLOR if on else RING_COLOR, active=on, font=font_tiny)
 
         items = [(n, lbl) for n, lbl, kind in SKINS if kind == self.themes_tab]
         cols, gap = 5, int(W * 0.015)
@@ -1303,7 +1332,7 @@ class App:
         for i, (name, label) in enumerate(items):
             c, r = i % cols, i // cols
             rect = pygame.Rect(m + c * (tw + gap), y0 + r * (th + label_h + gap), tw, th)
-            key = (name, tw, th)
+            key = self.thumb_key(name, tw, th)
             if key in self.thumbs or time.perf_counter() < budget_end:
                 screen.blit(self.get_thumb(name, tw, th), rect)
             else:
