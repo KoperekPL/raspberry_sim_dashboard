@@ -7,9 +7,10 @@ Uruchamia się automatycznie po starcie pulpitu i pozwala wybrać:
   FILM      - odtwarzanie filmów z ~/filmy przez mpv (bez PC)
   LEDY      - kolory i animacje taśmy WS2812 (przez demona ledd.py, bez PC)
 
-PC może też zdalnie przełączać tryb komendami JSON na port 5005:
-  {"cmd": "mode", "mode": "dashboard" | "film" | "menu", "file": "opcjonalnie.mp4"}
-  {"cmd": "stop", "mode": "dashboard" | "film"}   # wróć do menu, jeśli ten tryb jest aktywny
+Film uruchamia się tylko z ekranu dotykowego. PC może przełączać dashboard komendami JSON (port 5005):
+  {"cmd": "mode", "mode": "dashboard" | "menu"}
+  {"cmd": "stop", "mode": "dashboard"}            # wróć do menu, jeśli dashboard jest aktywny
+  {"cmd": "theme", "name": "warp" | "next" | "prev"}
 
 Test na zwykłym komputerze w oknie:  LAUNCHER_WINDOW=800x480 python3 launcher.py
 """
@@ -529,16 +530,6 @@ class App:
         if cmd == "mode":
             if target == "dashboard":
                 self.go_dash()
-            elif target == "film":
-                name = pkt.get("file")
-                if name:
-                    path = os.path.join(VIDEO_DIR, os.path.basename(str(name)))
-                    if os.path.isfile(path):
-                        self.play_film(path)
-                    else:
-                        self.toast(f"Brak pliku: {path}")
-                else:
-                    self.open_films()
             elif target == "menu":
                 self.go_menu()
         elif cmd == "theme":
@@ -548,8 +539,7 @@ class App:
             elif name in SKIN_NAMES:
                 self.set_theme(name)
         elif cmd == "stop":
-            if (target == "dashboard" and self.mode == "dash") or \
-               (target == "film" and self.mode == "film_play"):
+            if target == "dashboard" and self.mode == "dash":
                 self.go_menu()
 
     # ----- nawigacja -----
@@ -650,7 +640,7 @@ class App:
             self.mode = "film_list"
 
     def player_command(self, path):
-        """Te same parametry co w oryginalnym FILM.py (tam działało płynnie)."""
+        """Te same parametry co we wcześniejszym skrypcie filmu (tam działało płynnie)."""
         vlc, mpv = shutil.which("cvlc"), shutil.which("mpv")
         use_vlc = vlc and (FILM_PLAYER in ("vlc", "auto") or not mpv)
         if use_vlc:

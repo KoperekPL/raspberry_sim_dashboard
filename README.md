@@ -12,19 +12,19 @@ Po włączeniu RPi pokazuje się menu: **DASHBOARD / FILM / LEDY**. Filmy i LEDy
 |---|---|---|
 | Menu startowe | `launcher.py` (autostart po zalogowaniu) | – |
 | Dashboard | `launcher.py` + tarcze (`themes.py`) i pełne ekrany (`layouts.py`), dane UDP :5005 | `DASHBOARD.py` czyta HydroSim i wysyła telemetrię |
-| Film | `launcher.py` + `mpv`, pliki z `~/filmy` | `FILM.py` – opcjonalny pilot |
+| Film | `launcher.py` + VLC, pliki z `~/filmy`, uruchamiany z ekranu dotykowego | – |
 | LEDy | `ledd.py` – usługa systemd, działa od startu | `LED.py` – opcjonalne sterowanie z konsoli |
 
 ```
  PC (Windows)                         Raspberry Pi
  ┌──────────────┐  UDP 5005   ┌───────────────────────┐  UDP 5006  ┌─────────┐
  │ DASHBOARD.py ├────────────►│ launcher.py (pygame)  ├───────────►│ ledd.py ├─► SPI ─► WS2812
- │ FILM.py      │ telemetria  │ menu/dashboard/film   │ ustawienia │ (systemd)│
+ │              │ telemetria  │ menu/dashboard/film   │ ustawienia │ (systemd)│
  └──────────────┘ + komendy   └───────────┬───────────┘ + RPM      └─────────┘
  ┌──────────────┐  UDP 5006                │ uruchamia                  ▲
  │ LED.py       ├──────────────────────────┼────────────────────────────┘
  └──────────────┘                          ▼
-                                          mpv (~/filmy)
+                                          VLC (~/filmy)
 ```
 
 SSH nie jest już potrzebne. PC przełącza RPi w tryb dashboardu komendą UDP, a po zamknięciu `DASHBOARD.py` RPi wraca do menu.
@@ -74,7 +74,6 @@ Działa na Pi 3, 4 i 5. Używa SPI, więc nie potrzebuje roota i nie koliduje z 
 ## Na PC
 
 - `DASHBOARD.py`: tak jak wcześniej (potrzebny `hydrosim_sdk`). Przy starcie przełącza RPi na dashboard, przy zamknięciu wraca do menu.
-- `FILM.py`: opcjonalny. Odpala film na RPi z komputera (`FILE = "nazwa.mp4"` lub puste).
 - `LED.py`: np. `python LED.py rainbow`, `python LED.py static --color ff0000 --brightness 0.3`, `python LED.py status`.
 
 W każdym skrypcie ustaw `RPI_IP`. Zapora Windows musi przepuszczać wychodzące UDP (zwykle przepuszcza).
@@ -136,7 +135,7 @@ Ustawienia zapisują się w `~/.config/ledd/state.json` i są przywracane po res
 Launcher, port **5005**:
 ```json
 {"rpm": 6500, "max_rpm": 9000, "speed": 87, "unit": "MPH", "current_lap": 42.3, "last_lap": 61.2, "best_lap": 60.9}
-{"cmd": "mode", "mode": "dashboard"}            // też "film" (+ opcjonalnie "file") i "menu"
+{"cmd": "mode", "mode": "dashboard"}            // albo "menu"
 {"cmd": "stop", "mode": "dashboard"}            // wraca do menu tylko, jeśli ten tryb jest aktywny
 {"cmd": "theme", "name": "vintage"}             // nazwa tarczy/ekranu albo "next" / "prev"
 // opcjonalne pola w pakiecie telemetrii: "throttle" (0..1), "position", "lap"
@@ -150,7 +149,7 @@ ledd, port **5006**:
 
 ## Film
 
-Film odtwarza **VLC** z tymi samymi parametrami co oryginalny `FILM.py`. VLC w Raspberry Pi OS jest przygotowane pod sprzętowe dekodowanie na RPi. Po wybraniu filmu przez około 2 sekundy widać czarny ekran „Ładowanie filmu…”, potem launcher oddaje odtwarzaczowi cały ekran.
+Film odtwarza **VLC** z tymi samymi parametrami co wcześniejszy skrypt filmu. VLC w Raspberry Pi OS jest przygotowane pod sprzętowe dekodowanie na RPi. Po wybraniu filmu przez około 2 sekundy widać czarny ekran „Ładowanie filmu…”, potem launcher oddaje odtwarzaczowi cały ekran.
 
 Film zamykasz podwójnym dotknięciem ekranu albo klawiszem ESC. Launcher czyta dotyk bezpośrednio z `/dev/input` (`python3-evdev`, grupa `input`).
 
