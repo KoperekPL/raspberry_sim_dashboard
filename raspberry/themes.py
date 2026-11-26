@@ -8,13 +8,26 @@ więc nawet "ciężkie" tarcze (chrom, carbon, gradienty) nie obciążają RPi.
 Własną tarczę dodajesz, dopisując słownik do listy THEMES (patrz przykłady niżej).
 """
 import math
+import os
 
 import pygame
 
 START_DEG = 135.0
 SWEEP_DEG = 270.0
 
-FONT_FAMILIES = {"sans": "dejavusans", "serif": "dejavuserif", "mono": "dejavusansmono"}
+# Rodziny czcionek: najpierw konkretne pliki (szybko, bez szukania), potem nazwy systemowe.
+_DJ = "/usr/share/fonts/truetype/dejavu/"
+FONT_FILES = {
+    ("sans", True): [_DJ + "DejaVuSans-Bold.ttf"], ("sans", False): [_DJ + "DejaVuSans.ttf"],
+    ("serif", True): [_DJ + "DejaVuSerif-Bold.ttf"], ("serif", False): [_DJ + "DejaVuSerif.ttf"],
+    ("mono", True): [_DJ + "DejaVuSansMono-Bold.ttf"], ("mono", False): [_DJ + "DejaVuSansMono.ttf"],
+    ("cond", True): [_DJ + "DejaVuSansCondensed-Bold.ttf", _DJ + "DejaVuSans-Bold.ttf"],
+    ("cond", False): [_DJ + "DejaVuSansCondensed.ttf", _DJ + "DejaVuSans.ttf"],
+    ("seg", True): ["/usr/share/fonts/truetype/dseg/DSEG7Classic-Bold.ttf", _DJ + "DejaVuSansMono-Bold.ttf"],
+    ("seg", False): ["/usr/share/fonts/truetype/dseg/DSEG7Classic-Regular.ttf", _DJ + "DejaVuSansMono.ttf"],
+}
+FONT_FAMILIES = {"sans": "dejavusans", "serif": "dejavuserif", "mono": "dejavusansmono",
+                 "cond": "dejavusanscondensed", "seg": "dseg7classic"}
 
 # --------------------------------------------------------------------------
 # Parametry domyślne (= tarcza "NOWOCZESNA")
@@ -210,16 +223,49 @@ def get_theme(name):
 # Pomocnicze
 # --------------------------------------------------------------------------
 _font_cache = {}
+_font_path_cache = {}
+
+
+def _font_path(family, bold):
+    key = (family, bold)
+    if key not in _font_path_cache:
+        path = None
+        for cand in FONT_FILES.get(key, []):
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            try:
+                path = pygame.font.match_font(FONT_FAMILIES.get(family, family), bold=bold)
+            except Exception:
+                path = None
+        _font_path_cache[key] = path
+    return _font_path_cache[key]
 
 
 def get_font(family, size, bold=True):
+    """Czcionka z cache. Rozmiary są zaokrąglane, żeby nie ładować pliku dla każdego piksela."""
     size = max(8, int(size))
+    if size > 20:
+        size -= size % 2
+    if size > 60:
+        size -= size % 4
     key = (family, size, bold)
     f = _font_cache.get(key)
     if f is None:
-        f = pygame.font.SysFont(FONT_FAMILIES.get(family, family), size, bold=bold)
+        f = pygame.font.Font(_font_path(family, bold), size)
         _font_cache[key] = f
     return f
+
+
+def finalize(surf, alpha=True):
+    """Konwersja do formatu ekranu - wielokrotnie szybsze blitowanie (ważne na RPi)."""
+    if pygame.display.get_init() and pygame.display.get_surface() is not None:
+        try:
+            return surf.convert_alpha() if alpha else surf.convert()
+        except pygame.error:
+            pass
+    return surf
 
 
 def lerp(a, b, t):
@@ -236,10 +282,15 @@ def _ang(frac):
     return math.radians(START_DEG + frac * SWEEP_DEG)
 
 
-def arc_poly(surf, color, c, r_in, r_out, f0, f1):
+def arc_poly(surf, color, c, r_in, r_out, f0, f1, start=START_DEG, sweep=SWEEP_DEG):
+    """Wycinek pierścienia od ułamka f0 do f1 łuku (start/sweep w stopniach, oś Y w dół)."""
     if f1 <= f0:
         return
-    steps = max(2, int(48 * (f1 - f0)) + 2)
+    steps = max(2, int(48 * (f1 - f0) * abs(sweep) / 270.0) + 2)
+
+    def _ang(f):
+        return math.radians(start + f * sweep)
+
     pts = []
     for i in range(steps + 1):
         a = _ang(f0 + (f1 - f0) * i / steps)
@@ -434,6 +485,7 @@ def _static_layer(th, radius, max_val, step, redline, unit, divide, kind):
             cs = cf.render(text, True, th["caption_color"] or th["unit_color"])
             surf.blit(cs, cs.get_rect(center=(c[0], c[1] + r * th["caption_pos"])))
 
+    surf = finalize(surf)
     _static_cache[key] = surf
     return surf
 

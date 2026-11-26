@@ -11,7 +11,8 @@ RPI_PORT = 5005
 SEND_HZ = 60
 
 # Tarcza zegarów ustawiana przy starcie (puste = zostaw tę wybraną na RPi).
-# Dostępne: modern, vintage, classic, sport, marine, neon, carbon, digital, minimal, night
+# Tarcze: modern, vintage, classic, sport, marine, neon, carbon, digital, minimal, night
+# Ekrany: proline, f1, endurance, hud, synthwave, orbit, lava, matrix, warp, scope
 THEME = ""
 
 # Jeśli prędkość na zegarze będzie ok. 2.24x mniejsza niż na HUD w grze,
@@ -223,6 +224,31 @@ def get_lap_times(sdk):
     return cur_lap, last_lap, best_lap
 
 
+def get_extras(sdk, t):
+    """Dodatkowe dane dla ekranów na RPi - wysyłane tylko, jeśli SDK je udostępnia."""
+    extras = {}
+    thr = get_ci_attr(t, ("throttle", "throttleinput", "throttlepos", "throttleposition"))
+    if isinstance(thr, (int, float)):
+        v = safe_float(thr, -1.0)
+        if v > 1.5:
+            v /= 100.0
+        if 0.0 <= v <= 1.0:
+            extras["throttle"] = round(v, 3)
+    drv = get_local_driver(sdk)
+    if drv is not None:
+        pos = get_ci_attr(drv, ("position", "raceposition", "place"))
+        if isinstance(pos, (int, float)) and 0 < pos < 100:
+            extras["position"] = int(pos)
+        lap = get_ci_attr(drv, ("lap", "lapnumber", "currentlapnumber"))
+        if isinstance(lap, (int, float)) and 0 < lap < 10000:
+            extras["lap"] = int(lap)
+        else:
+            done = get_ci_attr(drv, ("lapscompleted", "completedlaps", "lapcount"))
+            if isinstance(done, (int, float)) and 0 <= done < 10000:
+                extras["lap"] = int(done) + 1
+    return extras
+
+
 def fmt_time(sec):
     if sec <= 0.0:
         return "--:--.---"
@@ -253,7 +279,7 @@ def send_telemetry(sdk):
 
     cur_lap, last_lap, best_lap = get_lap_times(sdk)
 
-    payload = json.dumps({
+    data = {
         "rpm": rpm,
         "max_rpm": effective_max_rpm,
         "speed": speed_mph,
@@ -261,7 +287,12 @@ def send_telemetry(sdk):
         "current_lap": cur_lap,
         "last_lap": last_lap,
         "best_lap": best_lap,
-    }).encode("utf-8")
+    }
+    try:
+        data.update(get_extras(sdk, t))
+    except Exception:
+        pass
+    payload = json.dumps(data).encode("utf-8")
     sock.sendto(payload, (RPI_IP, RPI_PORT))
 
     now = time.time()

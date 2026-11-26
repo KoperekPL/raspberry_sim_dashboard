@@ -27,6 +27,7 @@ os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okn
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
+import layouts as Lay
 import themes as T
 
 # ===================== KONFIGURACJA =====================
@@ -38,7 +39,9 @@ FILM_LOOP = True                      # True = film w pętli
 FILM_MUTE = False                     # True = bez dźwięku
 AUTO_DASHBOARD = False                # True = w menu automatycznie przejdź do dashboardu, gdy przyjdą dane z PC
 DATA_TIMEOUT = 3.0                    # po tylu sekundach bez danych dashboard pokazuje "czekam na dane"
-FPS = 60
+FPS = 60                              # dashboard; menu i ustawienia odświeżają się rzadziej
+MENU_FPS = 30
+MPV_EXTRA_ARGS = []                   # np. ["--hwdec=no"] albo ["--vo=gpu-next"], jeśli film nadal się tnie
 LOG_FILE = os.path.expanduser("~/.cache/pi-launcher.log")
 SETTINGS_FILE = os.path.expanduser("~/.config/pi-launcher/settings.json")  # m.in. wybrana tarcza
 # ========================================================
@@ -108,27 +111,53 @@ with open(MPV_INPUT_CONF, "w") as _f:
 # ---------------------------------------------------------------------------
 # Ekran
 # ---------------------------------------------------------------------------
-pygame.init()
-_win = os.environ.get("LAUNCHER_WINDOW")
-if _win:
-    _w, _h = (int(v) for v in _win.lower().split("x"))
-    screen = pygame.display.set_mode((_w, _h))
-else:
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    pygame.mouse.set_visible(False)
-pygame.display.set_caption("Pi Launcher")
+# Tylko grafika i czcionki - bez pygame.init(), który otwiera też dźwięk (wolny start, blokuje audio dla mpv)
+pygame.display.init()
+pygame.font.init()
+
+
+def open_display():
+    win = os.environ.get("LAUNCHER_WINDOW")
+    if win:
+        w, h = (int(v) for v in win.lower().split("x"))
+        surf = pygame.display.set_mode((w, h))
+    else:
+        surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        pygame.mouse.set_visible(False)
+    pygame.display.set_caption("Pi Launcher")
+    return surf
+
+
+screen = open_display()
 W, H = screen.get_size()
 clock = pygame.time.Clock()
 
+font_title = T.get_font("sans", H * 0.075)
+font_btn = T.get_font("sans", H * 0.060)
+font_small = T.get_font("sans", H * 0.036)
+font_tiny = T.get_font("sans", H * 0.028, bold=False)
 
-def make_font(name, size, bold=True):
-    return pygame.font.SysFont(name, max(8, int(size)), bold=bold)
+SKINS = [(t["name"], t["label"], "gauge") for t in T.THEMES] + \
+        [(l["name"], l["label"], "layout") for l in Lay.LAYOUTS]
+SKIN_NAMES = [n for n, _, _ in SKINS]
+SKIN_LABEL = {n: lbl for n, lbl, _ in SKINS}
 
 
-font_title = make_font("dejavusans", H * 0.075)
-font_btn = make_font("dejavusans", H * 0.060)
-font_small = make_font("dejavusans", H * 0.036)
-font_tiny = make_font("dejavusans", H * 0.028, bold=False)
+def render_skin(surf, name, view, now, dt):
+    """Rysuje cały ekran dashboardu (tarcza lub pełny ekran) na dowolnej powierzchni."""
+    if name in Lay.LAYOUT_BY_NAME:
+        Lay.LAYOUT_BY_NAME[name]["draw"](surf, view, now, dt)
+        return
+    th = T.get_theme(name)
+    w, h = surf.get_size()
+    surf.fill(th["bg"])
+    T.draw_timing_bar(surf, th, view.cur, view.last, view.best, format_lap_time)
+    radius = int(min(w * 0.21, h * 0.38))
+    cy = int(h * 0.56)
+    T.draw_gauge(surf, th, int(w * 0.26), cy, radius, view.rpm, view.rpm_max, "RPM",
+                 view.rpm_step, redline=view.redline, kind="rpm", divide=1000)
+    T.draw_gauge(surf, th, int(w * 0.74), cy, radius, view.speed, view.speed_max, view.unit,
+                 view.speed_step, redline=None, kind="speed", divide=1)
 
 
 def clamp(v, lo, hi):
@@ -187,12 +216,26 @@ class DashState:
         self.zero_rpm_since = None
         self.disp_rpm = 0.0
         self.disp_speed = 0.0
+        self.laps_done = 0
+        self.lap_from_pc = None
+        self.vmax = 0.0
+        self.session_start = None
+        self.last_pkt = 0.0
+        self.throttle = None
+        self.position = None
+        self.last_hist = 0.0
+        self.view = Lay.DashView()
 
     def reset_rpm_scale(self):
         self.rpm_scale, self.rpm_step = float(DEFAULT_RPM_SCALE[0]), float(DEFAULT_RPM_SCALE[1])
         self.rpm_redline = self.rpm_scale * 0.85
 
-    def process(self, pkt):
+    def process(self, pkt, now=None):
+        now = time.time() if now is None else now
+        if self.session_start is None or now - self.last_pkt > 30.0:
+            self.session_start = now
+        self.last_pkt = now
+        prev_last = self.last_lap
         self.target_rpm = max(0.0, float(pkt.get("rpm", self.target_rpm)))
         self.target_speed = max(0.0, float(pkt.get("speed", self.target_speed)))
         if "unit" in pkt:
@@ -203,6 +246,12 @@ class DashState:
             self.last_lap = max(0.0, float(pkt["last_lap"] or 0.0))
         if "best_lap" in pkt:
             self.best_lap = max(0.0, float(pkt["best_lap"] or 0.0))
+        if self.last_lap > 0 and abs(self.last_lap - prev_last) > 1e-3:
+            self.laps_done += 1
+        self.lap_from_pc = int(pkt["lap"]) if pkt.get("lap") else None
+        self.throttle = float(pkt["throttle"]) if pkt.get("throttle") is not None else None
+        self.position = int(pkt["position"]) if pkt.get("position") else None
+        self.vmax = max(self.vmax, self.target_speed)
 
         pkt_max_rpm = float(pkt.get("max_rpm", 0) or 0)
         if pkt_max_rpm > 0:
@@ -231,6 +280,20 @@ class DashState:
                 self.zero_rpm_since = None
         self.disp_rpm += (self.target_rpm - self.disp_rpm) * 0.28
         self.disp_speed += (self.target_speed - self.disp_speed) * 0.28
+
+        v = self.view
+        v.rpm, v.redline, v.rpm_max, v.rpm_step = self.disp_rpm, self.rpm_redline, self.rpm_scale, self.rpm_step
+        v.speed, v.speed_max, v.speed_step, v.unit = self.disp_speed, self.speed_scale, self.speed_step, self.speed_unit
+        v.cur, v.last, v.best = self.current_lap, self.last_lap, self.best_lap
+        v.lap = self.lap_from_pc or (self.laps_done + 1)
+        v.delta = (self.last_lap - self.best_lap) if (self.last_lap > 0 and self.best_lap > 0) else None
+        v.vmax = self.vmax
+        v.session = (now - self.session_start) if self.session_start else 0.0
+        v.throttle, v.position = self.throttle, self.position
+        if now - self.last_hist >= 1.0 / 30:
+            self.last_hist = now
+            v.hist_rpm.append(self.disp_rpm / self.rpm_scale if self.rpm_scale else 0.0)
+            v.hist_speed.append(self.disp_speed / self.speed_scale if self.speed_scale else 0.0)
 
 
 def load_settings():
@@ -263,8 +326,16 @@ class App:
     def __init__(self):
         self.mode = "menu"            # menu | dash | film_list | film_play | led | themes
         self.settings = load_settings()
-        self.theme = T.get_theme(self.settings.get("theme", T.DEFAULT_THEME))
+        skin = self.settings.get("theme", T.DEFAULT_THEME)
+        self.skin = skin if skin in SKIN_NAMES else T.DEFAULT_THEME
         self.themes_return = "menu"
+        self.themes_tab = "layout" if self.skin in Lay.LAYOUT_BY_NAME else "gauge"
+        self.thumbs = {}
+        self.sample = Lay.sample_view()
+        self.display_released = False
+        self.dash_ui_until = 0.0          # przyciski na dashboardzie pokazują się po dotknięciu
+        self.last_frame = time.time()
+        self.warm_tasks = self.make_warm_tasks()
         self.running = True
         self.dash = DashState()
         self.last_data = 0.0
@@ -382,7 +453,7 @@ class App:
             if self.mode == "menu" and AUTO_DASHBOARD:
                 self.go_dash()
             try:
-                self.dash.process(pkt)
+                self.dash.process(pkt, now)
             except (TypeError, ValueError):
                 pass
 
@@ -409,7 +480,7 @@ class App:
             name = str(pkt.get("name", ""))
             if name in ("next", "prev"):
                 self.cycle_theme(1 if name == "next" else -1)
-            elif name in T.THEME_BY_NAME:
+            elif name in SKIN_NAMES:
                 self.set_theme(name)
         elif cmd == "stop":
             if (target == "dashboard" and self.mode == "dash") or \
@@ -435,20 +506,64 @@ class App:
 
     def open_themes(self, back):
         self.themes_return = back
+        self.themes_tab = "layout" if self.skin in Lay.LAYOUT_BY_NAME else "gauge"
         self.mode = "themes"
 
     def set_theme(self, name, close=False):
-        self.theme = T.get_theme(name)
-        self.settings["theme"] = self.theme["name"]
+        if name not in SKIN_NAMES:
+            return
+        self.skin = name
+        self.settings["theme"] = name
         save_settings(self.settings)
-        print(f"Tarcza: {self.theme['name']}")
+        print(f"Ekran dashboardu: {name}")
         if close:
             self.mode = self.themes_return
 
     def cycle_theme(self, step):
-        names = [t["name"] for t in T.THEMES]
-        i = names.index(self.theme["name"]) if self.theme["name"] in names else 0
-        self.set_theme(names[(i + step) % len(names)])
+        i = SKIN_NAMES.index(self.skin) if self.skin in SKIN_NAMES else 0
+        self.set_theme(SKIN_NAMES[(i + step) % len(SKIN_NAMES)])
+
+    # ----- rozgrzewanie cache (żeby dashboard i wybór ekranów otwierały się od razu) -----
+    def make_warm_tasks(self):
+        def gen():
+            off = pygame.Surface((W, H))
+            yield lambda: render_skin(off, self.skin, self.sample, time.time(), 0.0)
+            tw, th = self.thumb_size()
+            order = [self.themes_tab] + [t for t in ("gauge", "layout") if t != self.themes_tab]
+            for tab in order:
+                for name, _, kind in SKINS:
+                    if kind == tab:
+                        yield lambda n=name: self.get_thumb(n, tw, th)
+        return gen()
+
+    def warm_step(self, budget=0.012):
+        if self.warm_tasks is None:
+            return
+        t0 = time.perf_counter()
+        while time.perf_counter() - t0 < budget:
+            try:
+                next(self.warm_tasks)()
+            except StopIteration:
+                self.warm_tasks = None
+                print(f"Cache gotowy ({time.strftime('%H:%M:%S')})")
+                return
+
+    def thumb_size(self):
+        cols, m, gap = 5, int(W * 0.03), int(W * 0.015)
+        tw = (W - 2 * m - gap * (cols - 1)) // cols
+        th = int(tw * H / W)
+        return tw, th
+
+    def get_thumb(self, name, tw, th):
+        key = (name, tw, th)
+        surf = self.thumbs.get(key)
+        if surf is None:
+            # render w połowie rozdzielczości ekranu i pomniejszenie -> miniatura wygląda jak prawdziwy ekran
+            big = pygame.Surface((max(tw, W // 2), max(th, H // 2)))
+            render_skin(big, name, self.sample, 12.3, 0.0)
+            surf = pygame.transform.smoothscale(big, (tw, th)).convert()
+            self.thumbs[key] = surf
+        return surf
 
     def scan_videos(self):
         try:
@@ -472,16 +587,21 @@ class App:
     def play_film(self, path):
         self.stop_film()
         args = ["mpv", "--fs", "--no-osc", "--no-osd-bar", "--osd-level=0",
-                "--cursor-autohide=always", "--hwdec=auto", "--no-terminal",
-                f"--input-conf={MPV_INPUT_CONF}"]
+                "--cursor-autohide=always", "--hwdec=auto-safe", "--framedrop=vo",
+                "--no-terminal", f"--input-conf={MPV_INPUT_CONF}"]
         if FILM_LOOP:
             args.append("--loop=inf")
         if FILM_MUTE:
             args.append("--no-audio")
+        args += MPV_EXTRA_ARGS
         args.append(path)
+        # Oddajemy cały ekran mpv: okno launchera znika na czas filmu, więc kompozytor
+        # nie musi składać dwóch pełnoekranowych okien (to dawało ~2 kl/s).
+        self.release_display()
         try:
             self.film_proc = subprocess.Popen(args)
         except FileNotFoundError:
+            self.restore_display()
             self.go_menu()
             self.toast("Nie znaleziono mpv (sudo apt install mpv)")
             return
@@ -489,23 +609,37 @@ class App:
         self.mode = "film_play"
         print(f"Film: {path}")
 
+    def release_display(self):
+        if not self.display_released:
+            pygame.display.quit()
+            self.display_released = True
+
+    def restore_display(self):
+        global screen
+        if self.display_released:
+            pygame.display.init()
+            screen = open_display()
+            self.display_released = False
+            self.active_slider = None
+
     def stop_film(self):
         proc = self.film_proc
         self.film_proc = None
-        if proc is None:
-            return
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
+        if proc is not None:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=2)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self.restore_display()
 
     def check_film(self):
         if self.film_proc is not None and self.film_proc.poll() is not None:
             self.film_proc = None
+            self.restore_display()
             if self.mode == "film_play":
                 self.mode = "menu"
 
@@ -528,12 +662,11 @@ class App:
         if self.mode == "dash":
             for rect, fn in self.hits:
                 if rect.collidepoint(pos):
+                    self.dash_ui_until = time.time() + 4.0
                     fn()
                     return
-            if x < 80 and y < 80:
-                self.go_menu()
-            elif x < W // 2:
-                self.dash.reset_rpm_scale()
+            # pierwsze dotknięcie pokazuje przyciski MENU / EKRAN (chowają się po 4 s)
+            self.dash_ui_until = time.time() + 4.0
             return
 
         for key, rect in self.slider_rects.items():
@@ -657,7 +790,7 @@ class App:
         by = int(H * 0.74)
         self.button((x0, by, bw, bh), "PULPIT", self.quit_to_desktop, font=font_small)
         self.button(((W - bw) // 2, by, bw, bh), "TARCZE", lambda: self.open_themes("menu"),
-                    color=ACCENT_BLUE, font=font_small, sub=self.theme["label"].lower())
+                    color=ACCENT_BLUE, font=font_small, sub=SKIN_LABEL.get(self.skin, "").lower())
         confirm = now < self.confirm_off_until
         self.button((W - x0 - bw, by, bw, bh), "NA PEWNO?" if confirm else "WYŁĄCZ",
                     self.power_off, color=REDLINE_COLOR, font=font_small, active=confirm)
@@ -669,25 +802,20 @@ class App:
         screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.94))))
 
     def draw_dash(self, now):
-        th = self.theme
-        screen.fill(th["bg"])
-        d = self.dash
-        T.draw_timing_bar(screen, th, d.current_lap, d.last_lap, d.best_lap, format_lap_time)
-        radius = int(min(W * 0.21, H * 0.38))
-        center_y = int(H * 0.56)
-        T.draw_gauge(screen, th, int(W * 0.26), center_y, radius, d.disp_rpm, d.rpm_scale,
-                     "RPM", d.rpm_step, redline=d.rpm_redline, kind="rpm", divide=1000)
-        T.draw_gauge(screen, th, int(W * 0.74), center_y, radius, d.disp_speed, d.speed_scale,
-                     d.speed_unit, d.speed_step, redline=None, kind="speed", divide=1)
-
-        bw, bh = int(W * 0.12), int(H * 0.09)
-        self.button((int(W * 0.01), int(H * 0.89), bw, bh), "< MENU", self.go_menu, font=font_tiny)
-        self.button((W - bw - int(W * 0.01), int(H * 0.89), bw, bh), "TARCZA",
-                    lambda: self.open_themes("dash"), font=font_tiny)
-
+        dt = min(0.1, now - self.last_frame)
+        render_skin(screen, self.skin, self.dash.view, now, dt)
+        if now < self.dash_ui_until:
+            bw, bh = int(W * 0.16), int(H * 0.11)
+            y = H - bh - int(H * 0.02)
+            self.button((int(W * 0.02), y, bw, bh), "< MENU", self.go_menu, font=font_small)
+            self.button((W - bw - int(W * 0.02), y, bw, bh), "EKRAN",
+                        lambda: self.open_themes("dash"), font=font_small)
+            self.button(((W - bw) // 2, y, bw, bh), "NASTĘPNY", lambda: self.cycle_theme(1), font=font_small)
         if now - self.last_data > DATA_TIMEOUT:
             s = font_small.render(f"Czekam na dane z PC (UDP :{UDP_PORT})...", True, ACCENT_ORANGE)
-            screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.17))))
+            box = s.get_rect(center=(W // 2, int(H * 0.5))).inflate(30, 16)
+            pygame.draw.rect(screen, (0, 0, 0), box, border_radius=10)
+            screen.blit(s, s.get_rect(center=box.center))
 
     def draw_film_list(self, now):
         screen.fill(BG_COLOR)
@@ -736,31 +864,35 @@ class App:
         m = int(W * 0.03)
         self.button((m, int(H * 0.02), int(W * 0.15), int(H * 0.095)), "< WSTECZ",
                     lambda: setattr(self, "mode", self.themes_return), font=font_small)
-        title = font_title.render("TARCZE ZEGARÓW", True, TEXT_COLOR)
-        screen.blit(title, title.get_rect(center=(W // 2, int(H * 0.07))))
+        tabw = int(W * 0.24)
+        for i, (tab, label) in enumerate((("gauge", "TARCZE"), ("layout", "EKRANY"))):
+            self.button((W // 2 - tabw + i * (tabw + 8), int(H * 0.02), tabw, int(H * 0.095)), label,
+                        lambda t=tab: setattr(self, "themes_tab", t), color=ACCENT_BLUE,
+                        active=(self.themes_tab == tab), font=font_small)
 
-        cols = 5
-        rows = math.ceil(len(T.THEMES) / cols)
-        gap = int(W * 0.015)
-        y0 = int(H * 0.15)
-        tw = (W - 2 * m - gap * (cols - 1)) // cols
-        th_h = (H - y0 - m - gap * (rows - 1)) // rows
-        # wskazówka "pracuje" w podglądzie
-        demo = 5200 + 2600 * (0.5 - 0.5 * math.cos(now * 1.3))
-        for i, theme in enumerate(T.THEMES):
-            col, row = i % cols, i // cols
-            rect = pygame.Rect(m + col * (tw + gap), y0 + row * (th_h + gap), tw, th_h)
-            pygame.draw.rect(screen, theme["bg"], rect, border_radius=10)
-            label_h = font_tiny.get_height() + 8
-            r = int(min(tw * 0.40, (th_h - label_h) * 0.42))
-            T.draw_gauge(screen, theme, rect.centerx, rect.y + 6 + int(r * 1.12), r, demo, 10000,
-                         "RPM", 2000, redline=8500, kind="rpm", divide=1000)
-            selected = theme["name"] == self.theme["name"]
-            lbl = render_fit(font_tiny, theme["label"], ACCENT_BLUE if selected else TEXT_COLOR, rect.w - 8)
-            screen.blit(lbl, lbl.get_rect(midbottom=(rect.centerx, rect.bottom - 4)))
-            pygame.draw.rect(screen, ACCENT_BLUE if selected else RING_COLOR, rect,
-                             4 if selected else 1, border_radius=10)
-            self.hits.append((rect, lambda n=theme["name"]: self.set_theme(n, close=True)))
+        items = [(n, lbl) for n, lbl, kind in SKINS if kind == self.themes_tab]
+        cols, gap = 5, int(W * 0.015)
+        tw, th = self.thumb_size()
+        label_h = font_tiny.get_height() + 6
+        rows = math.ceil(len(items) / cols)
+        y0 = int(H * 0.15) + max(0, (H - int(H * 0.15) - rows * (th + label_h + gap)) // 2)
+        budget_end = time.perf_counter() + 0.03     # ile czasu na dorobienie miniatur w tej klatce
+        for i, (name, label) in enumerate(items):
+            c, r = i % cols, i // cols
+            rect = pygame.Rect(m + c * (tw + gap), y0 + r * (th + label_h + gap), tw, th)
+            key = (name, tw, th)
+            if key in self.thumbs or time.perf_counter() < budget_end:
+                screen.blit(self.get_thumb(name, tw, th), rect)
+            else:
+                pygame.draw.rect(screen, DIAL_BG, rect)
+                s = font_tiny.render("...", True, SUBTEXT_COLOR)
+                screen.blit(s, s.get_rect(center=rect.center))
+            selected = name == self.skin
+            pygame.draw.rect(screen, ACCENT_BLUE if selected else RING_COLOR, rect.inflate(6, 6),
+                             4 if selected else 1, border_radius=6)
+            lbl = render_fit(font_tiny, label, ACCENT_BLUE if selected else TEXT_COLOR, tw)
+            screen.blit(lbl, lbl.get_rect(midtop=(rect.centerx, rect.bottom + 4)))
+            self.hits.append((rect.inflate(0, label_h), lambda n=name: self.set_theme(n, close=True)))
 
     def draw_led(self, now):
         screen.fill(BG_COLOR)
@@ -824,13 +956,19 @@ class App:
     def run(self):
         while self.running:
             now = time.time()
-            self.handle_events()
             self.poll_udp(now)
             self.poll_led(now)
             self.check_film()
-            self.dash.update(now)
             self.led_flush(now)
 
+            if self.display_released:
+                # film gra na całym ekranie - launcher tylko nasłuchuje komend i nic nie rysuje
+                self.last_frame = now
+                time.sleep(0.1)
+                continue
+
+            self.handle_events()
+            self.dash.update(now)
             if self.mode == "dash" and now - self.last_rpm_fwd > 0.033:
                 self.last_rpm_fwd = now
                 self.led_raw({"cmd": "rpm", "rpm": self.dash.target_rpm, "redline": self.dash.rpm_redline})
@@ -848,7 +986,11 @@ class App:
             draw(now)
             self.draw_toast(now)
             pygame.display.flip()
-            clock.tick(15 if self.mode == "film_play" else FPS)  # mniej CPU podczas filmu
+            self.last_frame = now
+
+            if self.mode in ("menu", "led", "film_list"):
+                self.warm_step()           # w wolnych chwilach przygotuj dashboard i miniatury
+            clock.tick(FPS if self.mode == "dash" else MENU_FPS)
 
         self.stop_film()
         self.led_flush(time.time(), force=True)

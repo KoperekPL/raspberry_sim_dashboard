@@ -347,6 +347,8 @@ def main():
 
     dirty = False
     last_save = 0.0
+    last_static = None
+    last_out = 0.0
     frame = 1.0 / FPS
     last = time.monotonic()
 
@@ -393,6 +395,14 @@ def main():
             save_state(state)
             dirty = False
             last_save = now
+
+        # Tryby statyczne: odświeżaj taśmę tylko po zmianie (i raz na sekundę dla pewności)
+        static_key = (state["mode"], tuple(state["color"]), state["brightness"])
+        if state["mode"] in ("off", "static") and static_key == last_static and now - last_out < 1.0:
+            time.sleep(0.03)
+            continue
+        last_static = static_key if state["mode"] in ("off", "static") else None
+        last_out = now
 
         pixels = anim.render(state, dt, now, rpm_info)
         strip.show(pixels, state["brightness"] * MAX_BRIGHTNESS)
