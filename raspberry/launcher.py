@@ -30,7 +30,14 @@ import time
 
 os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okna, gdy odtwarzacz zabierze fokus
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+if os.environ.get("DISPLAY"):
+    os.environ.setdefault("SDL_VIDEODRIVER", "x11")   # okno X11 = VLC może rysować film prosto w nim
 import pygame
+
+try:
+    import vlc                        # libVLC w procesie launchera (python3-vlc) - film w naszym oknie
+except Exception:
+    vlc = None
 
 try:
     import evdev                      # odczyt dotyku podczas filmu (python3-evdev)
@@ -52,7 +59,9 @@ AUTO_DASHBOARD = False                # True = w menu automatycznie przejdź do 
 DATA_TIMEOUT = 3.0                    # po tylu sekundach bez danych dashboard pokazuje "czekam na dane"
 FPS = 60                              # dashboard; menu i ustawienia odświeżają się rzadziej
 MENU_FPS = 30
-FILM_PLAYER = "vlc"                   # "vlc" (zalecane na RPi - sprzętowe dekodowanie), "mpv" albo "auto"
+FILM_ENGINE = "embedded"              # "embedded" = film w oknie launchera (nigdy nie widać pulpitu)
+                                      # "external" = osobny program VLC/mpv (stary sposób)
+FILM_PLAYER = "vlc"                   # dla "external": "vlc", "mpv" albo "auto"
 FILM_HANDOFF_DELAY = 2.0              # mpv: po ilu s launcher oddaje ekran
 FILM_HANDOFF_MAX = 30.0               # VLC: launcher czeka, aż film naprawdę gra (max tyle sekund)
 FILM_WARMUP = True                    # przy starcie raz "na próbę" odpal film (małe okno, bez dźwięku)
@@ -314,6 +323,73 @@ class DashState:
             v.hist_speed.append(self.disp_speed / self.speed_scale if self.speed_scale else 0.0)
 
 
+class EmbeddedPlayer:
+    """VLC rysujący film bezpośrednio w pełnoekranowym oknie launchera.
+    Okno nigdy się nie zamyka, więc przy starcie i końcu filmu nie widać pulpitu,
+    a załadowane raz wtyczki/dekodery zostają w pamięci."""
+
+    def __init__(self):
+        self.inst = vlc.Instance(["--no-video-title-show", "--no-osd", "--quiet",
+                                  f"--file-caching={VLC_CACHING_MS}"])
+        self.player = self.inst.media_player_new()
+        # dotyk i klawisze ma odbierać launcher (podwójne dotknięcie = koniec filmu)
+        self.player.video_set_mouse_input(False)
+        self.player.video_set_key_input(False)
+        self.path = None
+
+    @staticmethod
+    def window_id():
+        try:
+            return int(pygame.display.get_wm_info().get("window") or 0)
+        except Exception:
+            return 0
+
+    def play(self, path):
+        wid = self.window_id()
+        if not wid:
+            raise RuntimeError("brak okna X11 do osadzenia filmu")
+        self.player.set_xwindow(wid)
+        media = self.inst.media_new(path)
+        if FILM_LOOP:
+            media.add_option(":input-repeat=65535")
+        if FILM_MUTE:
+            media.add_option(":no-audio")
+        self.player.set_media(media)
+        self.player.play()
+        self.path = path
+
+    def stop(self):
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        self.path = None
+
+    def state(self):
+        try:
+            return self.player.get_state()
+        except Exception:
+            return None
+
+    def warm_up(self, path, keep_alive):
+        """Próbne odtworzenie bez obrazu i dźwięku: ładuje demuxer, dekoder i wtyczki do pamięci."""
+        p = self.inst.media_player_new()
+        m = self.inst.media_new(path)
+        m.add_option(":vout=dummy")
+        m.add_option(":no-audio")
+        p.set_media(m)
+        p.play()
+        t0 = time.time()
+        while time.time() - t0 < 3.0:
+            keep_alive(min(0.98, (time.time() - t0) / 3.0))
+            st = p.get_state()
+            if st in (vlc.State.Ended, vlc.State.Error):
+                break
+            time.sleep(0.1)
+        p.stop()
+        p.release()
+
+
 class TouchWatcher:
     """Podwójne dotknięcie / ESC podczas filmu, czytane prosto z /dev/input (działa z każdym odtwarzaczem)."""
 
@@ -411,6 +487,10 @@ class App:
         self.film_fails = 0
         self.film_active = False
         self.film_frame_drawn = False
+        self.film_engine = None
+        self.embedded = None
+        self.embedded_failed = False
+        self.last_film_tap = 0.0
         self.film_uses_rc = False
         self.vlc_rc = True
         self.last_rc_poll = 0.0
@@ -690,13 +770,31 @@ class App:
 
         # Próbne uruchomienie filmu - dokładnie tą samą drogą co prawdziwe (obraz przez GPU, czcionki,
         # dekoder), tylko w małym okienku i bez dźwięku. Po tym pierwsze odpalenie filmu jest natychmiastowe.
-        vlc = shutil.which("cvlc")
-        if not (FILM_WARMUP and vlc and videos and FILM_PLAYER != "mpv"):
+        if not (FILM_WARMUP and videos):
+            return
+        player = self.get_embedded()
+        if player is not None:
+            t0 = time.time()
+
+            def keep_alive(frac):
+                try:
+                    self.draw_splash(frac, "PRZYGOTOWANIE FILMU")
+                except pygame.error:
+                    refresh_screen()
+
+            try:
+                player.warm_up(videos[0], keep_alive)
+            except Exception as e:
+                print(f"Próbne odtworzenie nieudane: {e}")
+            print(f"Próbny start filmu (wbudowany odtwarzacz): {time.time() - t0:.1f} s")
+            return
+        vlc_bin = shutil.which("cvlc")
+        if not (vlc_bin and FILM_PLAYER != "mpv"):
             return
         t0 = time.time()
         try:
             self.warm_player = subprocess.Popen(
-                [vlc, "--no-audio", "--no-fullscreen", "--no-autoscale", "--width=64", "--height=36",
+                [vlc_bin, "--no-audio", "--no-fullscreen", "--no-autoscale", "--width=64", "--height=36",
                  "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0",
                  "--run-time=4", "--play-and-exit", videos[0]],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -772,10 +870,10 @@ class App:
 
     def player_command(self, path):
         """Te same parametry co we wcześniejszym skrypcie filmu (tam działało płynnie)."""
-        vlc, mpv = shutil.which("cvlc"), shutil.which("mpv")
-        use_vlc = vlc and (FILM_PLAYER in ("vlc", "auto") or not mpv)
+        vlc_bin, mpv = shutil.which("cvlc"), shutil.which("mpv")
+        use_vlc = vlc_bin and (FILM_PLAYER in ("vlc", "auto") or not mpv)
         if use_vlc:
-            args = [vlc, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0",
+            args = [vlc_bin, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0",
                     f"--file-caching={VLC_CACHING_MS}",
                     "--file-logging", f"--logfile={VLC_LOG}", "--log-verbose=2"]
             if FILM_LOOP:
@@ -812,6 +910,27 @@ class App:
             os.unlink(VLC_LOG)
         except OSError:
             pass
+        self.film_path = path
+        self.film_fails = 0
+        self.film_started = time.time()
+        self.film_name = os.path.basename(path)
+        self.last_film_tap = 0.0
+        player = self.get_embedded()
+        if player is not None:
+            try:
+                try:
+                    screen.fill((0, 0, 0))        # czarne tło na ułamek sekundy, zanim pojawi się obraz
+                    pygame.display.flip()
+                except pygame.error:
+                    refresh_screen()
+                player.play(path)
+                self.film_engine = "embedded"
+                self.mode = "film_play"
+                print(f"Film (w oknie launchera): {path}")
+                return
+            except Exception as e:
+                print(f"Film w oknie launchera nie ruszył ({e}) - używam osobnego VLC")
+        self.film_engine = "external"
         args = self.player_command(path)
         if args is None:
             self.go_menu()
@@ -829,6 +948,19 @@ class App:
         self.mode = "film_play"
         self.touch = TouchWatcher()
         print(f"Film: {' '.join(args)}")
+
+    def get_embedded(self):
+        """Wbudowany odtwarzacz (tworzony raz i trzymany w pamięci) albo None, jeśli niedostępny."""
+        if FILM_ENGINE != "embedded" or vlc is None or self.embedded_failed:
+            return None
+        if self.embedded is None:
+            try:
+                self.embedded = EmbeddedPlayer()
+            except Exception as e:
+                print(f"libVLC niedostępne ({e}) - film przez osobny VLC")
+                self.embedded_failed = True
+                return None
+        return self.embedded
 
     def vlc_time(self):
         """Czas odtwarzania z VLC [s] albo None, jeśli VLC jeszcze nie odpowiada."""
@@ -878,6 +1010,9 @@ class App:
             self.active_slider = None
 
     def stop_film(self):
+        if self.film_engine == "embedded" and self.embedded is not None:
+            self.embedded.stop()
+        self.film_engine = None
         proc = self.film_proc
         self.film_proc = None
         if proc is not None:
@@ -896,6 +1031,17 @@ class App:
         self.restore_display()
 
     def check_film(self):
+        if self.film_engine == "embedded" and self.mode == "film_play":
+            st = self.embedded.state()
+            if st == vlc.State.Ended and FILM_LOOP:
+                # zapas, gdyby input-repeat nie zadziałał: odtwórz od początku w tym samym oknie
+                print("Film zapętlony (wbudowany odtwarzacz)")
+                self.embedded.play(self.film_path)
+            elif st in (vlc.State.Ended, vlc.State.Error):
+                if st == vlc.State.Error:
+                    self.toast("Nie można odtworzyć filmu - sprawdź plik")
+                self.go_menu()
+            return
         if self.film_proc is not None and self.film_proc.poll() is not None:
             ran = time.time() - self.film_proc_started
             self.film_proc = None
@@ -943,6 +1089,12 @@ class App:
             return
 
         if self.mode == "film_play":
+            if self.film_engine == "embedded":
+                now = time.time()
+                if now - self.last_film_tap < 0.45:
+                    print("Film zatrzymany dotknięciem")
+                    self.go_menu()
+                self.last_film_tap = now
             return
         for key, rect in self.slider_rects.items():
             if rect.inflate(0, int(H * 0.05)).collidepoint(pos):
@@ -1268,7 +1420,7 @@ class App:
                 self.last_rpm_fwd = now
                 self.led_raw({"cmd": "rpm", "rpm": self.dash.target_rpm, "redline": self.dash.rpm_redline})
 
-            if self.mode == "film_play" and self.film_frame_drawn:
+            if self.mode == "film_play" and (self.film_frame_drawn or self.film_engine == "embedded"):
                 # czarny ekran już jest - nie odświeżaj go pod oknem VLC (mniej pracy dla kompozytora)
                 time.sleep(0.05)
                 continue
