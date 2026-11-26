@@ -143,6 +143,14 @@ def open_display():
 
 screen = open_display()
 W, H = screen.get_size()
+
+
+def refresh_screen():
+    """Po błędzie rysowania pobierz powierzchnię okna od nowa (SDL mógł ją podmienić)."""
+    global screen
+    surf = pygame.display.get_surface()
+    if surf is not None:
+        screen = surf
 clock = pygame.time.Clock()
 
 font_title = T.get_font("sans", H * 0.075)
@@ -432,8 +440,7 @@ class App:
         self.led_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.led_sock.setblocking(False)
         self.led_raw({"cmd": "get"})
-        self.preload_media()          # w tle: film + VLC do RAM
-        self.preload_ui()             # na ekranie startowym: wszystkie tarcze i ekrany
+        self.preload_pending = True   # wczytanie grafiki + filmu rusza po pierwszej klatce (w run)
 
     # ----- komunikaty -----
     def toast(self, text, seconds=3.0):
@@ -590,25 +597,37 @@ class App:
         tasks = list(self.make_warm_tasks())
         t_start = time.perf_counter()
         last_draw = 0.0
+        splash_ok = True
         for i, task in enumerate(tasks):
             try:
                 task()
             except Exception as e:
                 print(f"Błąd przy wczytywaniu: {e}")
             now = time.perf_counter()
-            if now - last_draw > 0.05 or i == len(tasks) - 1:
+            if splash_ok and (now - last_draw > 0.05 or i == len(tasks) - 1):
                 last_draw = now
-                pygame.event.pump()
-                screen.fill(BG_COLOR)
-                t = font_title.render("WCZYTYWANIE", True, TEXT_COLOR)
-                screen.blit(t, t.get_rect(center=(W // 2, int(H * 0.42))))
-                bar = pygame.Rect(int(W * 0.2), int(H * 0.55), int(W * 0.6), int(H * 0.035))
-                pygame.draw.rect(screen, DIAL_BG, bar, border_radius=bar.h // 2)
-                fill = bar.copy()
-                fill.w = max(bar.h, int(bar.w * (i + 1) / len(tasks)))
-                pygame.draw.rect(screen, ACCENT_BLUE, fill, border_radius=bar.h // 2)
-                pygame.display.flip()
+                try:
+                    self.draw_splash((i + 1) / len(tasks))
+                except pygame.error as e:
+                    print(f"Ekran wczytywania pominięty: {e}")
+                    splash_ok = False
+                    refresh_screen()
         print(f"Grafika wczytana w {time.perf_counter() - t_start:.1f} s")
+
+    def draw_splash(self, frac):
+        pygame.event.pump()
+        refresh_screen()
+        frame = pygame.Surface((W, H))          # najpierw poza ekranem, potem jeden blit
+        frame.fill(BG_COLOR)
+        t = font_title.render("WCZYTYWANIE", True, TEXT_COLOR)
+        frame.blit(t, t.get_rect(center=(W // 2, int(H * 0.42))))
+        bar = pygame.Rect(int(W * 0.2), int(H * 0.55), int(W * 0.6), int(H * 0.035))
+        pygame.draw.rect(frame, DIAL_BG, bar, border_radius=bar.h // 2)
+        fill = bar.copy()
+        fill.w = max(bar.h, int(bar.w * frac))
+        pygame.draw.rect(frame, ACCENT_BLUE, fill, border_radius=bar.h // 2)
+        screen.blit(frame, (0, 0))
+        pygame.display.flip()
 
     # ----- wstępne wczytanie filmu i VLC do RAM (pierwsze uruchomienie filmu bez czekania) -----
     def preload_media(self):
@@ -1159,10 +1178,22 @@ class App:
                 "led": self.draw_led,
                 "themes": self.draw_themes,
             }[self.mode]
-            draw(now)
-            self.draw_toast(now)
-            pygame.display.flip()
+            try:
+                draw(now)
+                self.draw_toast(now)
+                pygame.display.flip()
+            except pygame.error as e:
+                # pojedyncza nieudana klatka nie może wyłączyć aplikacji
+                print(f"Błąd rysowania ({self.mode}): {e}")
+                refresh_screen()
+                time.sleep(0.05)
             self.last_frame = now
+
+            if self.preload_pending:
+                # najpierw grafika (pasek postępu), dopiero potem w tle film/VLC - nie równocześnie
+                self.preload_pending = False
+                self.preload_ui()
+                self.preload_media()
 
             if self.mode in ("menu", "led", "film_list"):
                 self.warm_step()           # w wolnych chwilach przygotuj dashboard i miniatury

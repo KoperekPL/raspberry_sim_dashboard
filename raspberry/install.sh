@@ -22,9 +22,9 @@ if [ -n "$VCG" ]; then sudo "$VCG" "$(dirname "$VCG")/plugins" || true; fi
 
 echo "==> Pliki -> $DEST"
 mkdir -p "$DEST" "$HOME/filmy"
-cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/layouts.py" "$SRC/ledd.py" "$DEST/"
+cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/layouts.py" "$SRC/ledd.py" "$SRC/run.sh" "$DEST/"
 [ -f "$SRC/../pc/LED.py" ] && cp "$SRC/../pc/LED.py" "$DEST/" || true   # LED.py przyda się też na samym RPi
-chmod +x "$DEST/"*.py
+chmod +x "$DEST/"*.py "$DEST/run.sh"
 
 echo "==> SPI (dla taśmy WS2812 na GPIO10 / pin 19)"
 sudo raspi-config nonint do_spi 0
@@ -67,7 +67,7 @@ DESKTOP_ENTRY="[Desktop Entry]
 Type=Application
 Name=Pi Launcher
 Comment=Menu: Dashboard / Film / LEDy
-Exec=/usr/bin/python3 $DEST/launcher.py
+Exec=/bin/bash $DEST/run.sh
 Icon=applications-multimedia
 Terminal=false
 Categories=AudioVideo;"
