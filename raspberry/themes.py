@@ -372,7 +372,7 @@ def _static_layer(th, radius, max_val, step, redline, unit, divide, kind):
     surf = _static_cache.get(key)
     if surf is not None:
         return surf
-    if len(_static_cache) > 80:
+    if len(_static_cache) > 300:
         _static_cache.clear()
 
     pad = int(radius * 0.14) + 6

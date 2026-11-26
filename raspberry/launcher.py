@@ -16,6 +16,7 @@ Test na zwykłym komputerze w oknie:  LAUNCHER_WINDOW=800x480 python3 launcher.p
 """
 import colorsys
 import fcntl
+import glob
 import json
 import math
 import os
@@ -23,6 +24,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okna, gdy odtwarzacz zabierze fokus
@@ -401,7 +403,7 @@ class App:
         self.film_started = 0.0
         self.dash_ui_until = 0.0          # przyciski na dashboardzie pokazują się po dotknięciu
         self.last_frame = time.time()
-        self.warm_tasks = self.make_warm_tasks()
+        self.warm_tasks = None
         self.running = True
         self.dash = DashState()
         self.last_data = 0.0
@@ -438,6 +440,8 @@ class App:
         self.led_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.led_sock.setblocking(False)
         self.led_raw({"cmd": "get"})
+        self.preload_media()          # w tle: film + VLC do RAM
+        self.preload_ui()             # na ekranie startowym: wszystkie tarcze i ekrany
 
     # ----- komunikaty -----
     def toast(self, text, seconds=3.0):
@@ -580,16 +584,94 @@ class App:
 
     # ----- rozgrzewanie cache (żeby dashboard i wybór ekranów otwierały się od razu) -----
     def make_warm_tasks(self):
-        def gen():
-            off = pygame.Surface((W, H))
-            yield lambda: render_skin(off, self.skin, self.sample, time.time(), 0.0)
-            tw, th = self.thumb_size()
-            order = [self.themes_tab] + [t for t in ("gauge", "layout") if t != self.themes_tab]
-            for tab in order:
-                for name, _, kind in SKINS:
-                    if kind == tab:
-                        yield lambda n=name: self.get_thumb(n, tw, th)
-        return gen()
+        """Wszystko, co rysowanie potrzebuje policzyć raz: tarcze, tła ekranów, czcionki, miniatury."""
+        self.dash.update(time.time())          # domyślne skale - te same, które dashboard pokaże na start
+        view = self.dash.view
+        off = pygame.Surface((W, H))
+        tasks = []
+        for name in [self.skin] + [n for n in SKIN_NAMES if n != self.skin]:
+            tasks.append(lambda n=name: render_skin(off, n, view, time.time(), 0.0))
+        tw, th = self.thumb_size()
+        for name in SKIN_NAMES:
+            tasks.append(lambda n=name: self.get_thumb(n, tw, th))
+        return iter(tasks)
+
+    def preload_ui(self):
+        """Ekran startowy z paskiem postępu - po nim dashboard i wybór ekranów otwierają się od razu."""
+        tasks = list(self.make_warm_tasks())
+        t_start = time.perf_counter()
+        last_draw = 0.0
+        for i, task in enumerate(tasks):
+            try:
+                task()
+            except Exception as e:
+                print(f"Błąd przy wczytywaniu: {e}")
+            now = time.perf_counter()
+            if now - last_draw > 0.05 or i == len(tasks) - 1:
+                last_draw = now
+                pygame.event.pump()
+                screen.fill(BG_COLOR)
+                t = font_title.render("WCZYTYWANIE", True, TEXT_COLOR)
+                screen.blit(t, t.get_rect(center=(W // 2, int(H * 0.42))))
+                bar = pygame.Rect(int(W * 0.2), int(H * 0.55), int(W * 0.6), int(H * 0.035))
+                pygame.draw.rect(screen, DIAL_BG, bar, border_radius=bar.h // 2)
+                fill = bar.copy()
+                fill.w = max(bar.h, int(bar.w * (i + 1) / len(tasks)))
+                pygame.draw.rect(screen, ACCENT_BLUE, fill, border_radius=bar.h // 2)
+                pygame.display.flip()
+        print(f"Grafika wczytana w {time.perf_counter() - t_start:.1f} s")
+
+    # ----- wstępne wczytanie filmu i VLC do RAM (pierwsze uruchomienie filmu bez czekania) -----
+    def preload_media(self):
+        self.warm_player = None
+
+        def fadvise(path):
+            try:
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_WILLNEED)   # jądro czyta plik do RAM w tle
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+
+        def work():
+            t0 = time.time()
+            videos = [os.path.join(VIDEO_DIR, f) for f in self.scan_videos()]
+            for v in videos:
+                fadvise(v)
+            libs = []
+            for pattern in ("/usr/lib/*/vlc/**", "/usr/lib/vlc/**", "/usr/lib/*/libvlc*.so*",
+                            "/usr/lib/*/libav*.so*", "/usr/lib/*/libsw*.so*", "/usr/lib/*/libplacebo*.so*",
+                            "/usr/bin/vlc", "/usr/bin/cvlc"):
+                libs += glob.glob(pattern, recursive=True)
+            for f in libs:
+                if os.path.isfile(f):
+                    fadvise(f)
+            # Raz uruchom VLC bez obrazu i dźwięku - ładuje wtyczki i dekoder, potem start filmu jest natychmiastowy
+            vlc = shutil.which("cvlc")
+            if vlc and videos and FILM_PLAYER != "mpv" and self.film_proc is None:
+                try:
+                    self.warm_player = subprocess.Popen(
+                        [vlc, "-I", "dummy", "--vout", "dummy", "--aout", "dummy", "--no-video-title-show",
+                         "--run-time=2", "--play-and-exit", videos[0]],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        preexec_fn=lambda: os.nice(10))
+                    self.warm_player.wait(timeout=20)
+                except Exception:
+                    self.kill_warm_player()
+            print(f"Film/VLC wczytane do RAM w {time.time() - t0:.1f} s ({len(videos)} filmów, {len(libs)} plików VLC)")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def kill_warm_player(self):
+        proc = getattr(self, "warm_player", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:
+                pass
 
     def warm_step(self, budget=0.012):
         if self.warm_tasks is None:
@@ -661,6 +743,7 @@ class App:
 
     def play_film(self, path):
         self.stop_film()
+        self.kill_warm_player()
         args = self.player_command(path)
         if args is None:
             self.go_menu()

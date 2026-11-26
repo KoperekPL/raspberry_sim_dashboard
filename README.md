@@ -151,6 +151,8 @@ ledd, port **5006**:
 
 Film odtwarza **VLC** z tymi samymi parametrami co wcześniejszy skrypt filmu. VLC w Raspberry Pi OS jest przygotowane pod sprzętowe dekodowanie na RPi. Po wybraniu filmu przez około 2 sekundy widać czarny ekran „Ładowanie filmu…”, potem launcher oddaje odtwarzaczowi cały ekran.
 
+Przy starcie aplikacji launcher w tle wczytuje do RAM pliki filmów i biblioteki VLC oraz raz uruchamia VLC bez obrazu i dźwięku. Dzięki temu już pierwsze odpalenie filmu jest tak szybkie jak kolejne. Wszystkie tarcze i ekrany renderują się raz na ekranie „WCZYTYWANIE” z paskiem postępu, więc dashboard i wybór ekranów otwierają się bez czekania.
+
 Film zamykasz podwójnym dotknięciem ekranu albo klawiszem ESC. Launcher czyta dotyk bezpośrednio z `/dev/input` (`python3-evdev`, grupa `input`).
 
 Ustawienia na górze `launcher.py`:

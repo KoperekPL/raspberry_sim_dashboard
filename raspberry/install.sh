@@ -16,6 +16,10 @@ echo "==> Pakiety"
 sudo apt-get update
 sudo apt-get install -y python3-pygame python3-spidev python3-evdev vlc mpv fonts-dejavu-core fonts-dejavu-extra fonts-dseg
 
+echo "==> Cache wtyczek VLC (szybszy start filmu)"
+VCG=$(ls /usr/lib/*/vlc/vlc-cache-gen /usr/lib/vlc/vlc-cache-gen 2>/dev/null | head -n1)
+if [ -n "$VCG" ]; then sudo "$VCG" "$(dirname "$VCG")/plugins" || true; fi
+
 echo "==> Pliki -> $DEST"
 mkdir -p "$DEST" "$HOME/filmy"
 cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/layouts.py" "$SRC/ledd.py" "$DEST/"
