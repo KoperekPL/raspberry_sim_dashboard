@@ -509,7 +509,7 @@ class App:
     def poll_udp(self, now):
         while True:
             try:
-                data, _ = self.sock.recvfrom(2048)
+                data, addr = self.sock.recvfrom(2048)
             except (BlockingIOError, InterruptedError):
                 break
             except OSError:
@@ -521,6 +521,13 @@ class App:
             except Exception:
                 continue
 
+            if pkt.get("cmd") == "ping":
+                # PC sprawdza, czy launcher działa (DASHBOARD.py uruchamia go przez SSH, jeśli nie)
+                try:
+                    self.sock.sendto(json.dumps({"pong": True, "mode": self.mode}).encode("utf-8"), addr)
+                except OSError:
+                    pass
+                continue
             if "cmd" in pkt:
                 self.handle_command(pkt)
                 continue
@@ -622,6 +629,7 @@ class App:
         print(f"Grafika wczytana w {time.perf_counter() - t_start:.1f} s")
 
     def draw_splash(self, frac, title="WCZYTYWANIE"):
+        self.poll_udp(time.time())            # odpowiadaj na "ping" z PC także podczas wczytywania
         pygame.event.pump()
         refresh_screen()
         frame = pygame.Surface((W, H))          # najpierw poza ekranem, potem jeden blit

@@ -27,7 +27,7 @@ Po włączeniu RPi pokazuje się menu: **DASHBOARD / FILM / LEDY**. Filmy i LEDy
                                           VLC (~/filmy)
 ```
 
-SSH nie jest już potrzebne. PC przełącza RPi w tryb dashboardu komendą UDP, a po zamknięciu `DASHBOARD.py` RPi wraca do menu.
+PC przełącza RPi w tryb dashboardu komendą UDP, a po zamknięciu `DASHBOARD.py` RPi wraca do menu. SSH jest potrzebne tylko do uruchomienia launchera, gdy ten nie działa.
 
 ## Instalacja na Raspberry Pi
 
@@ -73,10 +73,15 @@ Działa na Pi 3, 4 i 5. Używa SPI, więc nie potrzebuje roota i nie koliduje z 
 
 ## Na PC
 
-- `DASHBOARD.py`: tak jak wcześniej (potrzebny `hydrosim_sdk`). Przy starcie przełącza RPi na dashboard, przy zamknięciu wraca do menu.
+- `DASHBOARD.py`: jedyny skrypt potrzebny na PC (wymaga `hydrosim_sdk`). Przy starcie:
+  1. sprawdza po UDP, czy launcher na RPi działa,
+  2. jeśli nie działa, uruchamia go przez SSH (`RPI_USER@RPI_IP`, logowanie kluczem bez hasła) i czeka, aż się wczyta,
+  3. przełącza RPi na dashboard.
+
+  Po zamknięciu RPi wraca do menu. Automatyczne uruchamianie wyłącza `AUTO_START_LAUNCHER = False`.
 - `LED.py`: np. `python LED.py rainbow`, `python LED.py static --color ff0000 --brightness 0.3`, `python LED.py status`.
 
-W każdym skrypcie ustaw `RPI_IP`. Zapora Windows musi przepuszczać wychodzące UDP (zwykle przepuszcza).
+W `DASHBOARD.py` i `LED.py` ustaw `RPI_IP` (domyślnie `192.168.0.112`). Zapora Windows musi przepuszczać wychodzące UDP (zwykle przepuszcza).
 
 ## Ekrany dashboardu
 
@@ -137,6 +142,7 @@ Launcher, port **5005**:
 {"rpm": 6500, "max_rpm": 9000, "speed": 87, "unit": "MPH", "current_lap": 42.3, "last_lap": 61.2, "best_lap": 60.9}
 {"cmd": "mode", "mode": "dashboard"}            // albo "menu"
 {"cmd": "stop", "mode": "dashboard"}            // wraca do menu tylko, jeśli ten tryb jest aktywny
+{"cmd": "ping"}                                 // odpowiedź: {"pong": true, "mode": "..."}
 {"cmd": "theme", "name": "vintage"}             // nazwa tarczy/ekranu albo "next" / "prev"
 // opcjonalne pola w pakiecie telemetrii: "throttle" (0..1), "position", "lap"
 ```

@@ -16,7 +16,7 @@ import argparse
 import json
 import socket
 
-RPI_IP = "192.168.50.2"
+RPI_IP = "192.168.0.112"
 LED_PORT = 5006
 MODES = ("off", "static", "breathe", "rainbow", "cycle",
          "comet", "sparkle", "fire", "police", "shift")

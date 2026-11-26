@@ -2,11 +2,14 @@ import ctypes
 import json
 import math
 import socket
+import subprocess
 import threading
 import time
 from hydrosim_sdk import HydroSimSDK
 
-RPI_IP = "192.168.50.2"
+RPI_IP = "192.168.0.112"
+RPI_USER = "pi"             # użytkownik SSH na RPi (logowanie kluczem, bez hasła)
+AUTO_START_LAUNCHER = True  # jeśli launcher na RPi nie działa - uruchom go przez SSH
 RPI_PORT = 5005
 SEND_HZ = 60
 
@@ -41,6 +44,68 @@ BEST_LAP_KEYS = (
 
 
 # --- Sterowanie launcherem na Raspberry Pi (komendy UDP, bez SSH) ---
+
+# Uruchomienie launchera w sesji pulpitu RPi (te same zmienne środowiska co dawniej przy SSH).
+# run.sh pilnuje restartu po awarii; drugi launcher sam się wyłączy, jeśli jeden już działa.
+REMOTE_START = (
+    "if pgrep -f '[l]auncher.py' >/dev/null; then echo 'launcher: proces istnieje'; else "
+    "WD=$(find /run/user/$(id -u) -maxdepth 1 -type s -name 'wayland-*' -printf '%f\\n' 2>/dev/null | head -n1); "
+    "export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=${WD:-wayland-0} DISPLAY=:0; "
+    "setsid -f bash \"$HOME/pi-launcher/run.sh\" >/dev/null 2>&1 </dev/null; "
+    "echo 'launcher: uruchomiony'; fi"
+)
+
+
+def ping_launcher(timeout=1.0):
+    """True, jeśli launcher na RPi odpowiada na UDP."""
+    try:
+        sock.settimeout(timeout)
+        sock.sendto(b'{"cmd": "ping"}', (RPI_IP, RPI_PORT))
+        end = time.time() + timeout
+        while time.time() < end:
+            data, _ = sock.recvfrom(2048)
+            if b"pong" in data:
+                return True
+    except (socket.timeout, OSError):
+        pass
+    finally:
+        sock.settimeout(None)
+    return False
+
+
+def ensure_launcher():
+    """Sprawdź, czy launcher działa; jeśli nie - uruchom go przez SSH i poczekaj, aż się wczyta."""
+    if ping_launcher(1.0):
+        print("Launcher na Raspberry Pi działa.")
+        return True
+    if not AUTO_START_LAUNCHER:
+        print("UWAGA: launcher na Raspberry Pi nie odpowiada.")
+        return False
+
+    print(f"Launcher nie odpowiada - uruchamiam go przez SSH ({RPI_USER}@{RPI_IP})...")
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", f"{RPI_USER}@{RPI_IP}", REMOTE_START],
+            capture_output=True, text=True, timeout=20,
+        )
+        msg = (r.stdout + r.stderr).strip()
+        if msg:
+            print("RPi:", msg)
+    except FileNotFoundError:
+        print("Brak programu ssh na tym komputerze.")
+    except subprocess.TimeoutExpired:
+        print("SSH nie odpowiada (RPi wyłączone albo inny adres?).")
+
+    print("Czekam, aż launcher się wczyta...")
+    end = time.time() + 90
+    while time.time() < end:
+        if ping_launcher(1.0):
+            print("Launcher gotowy.")
+            return True
+        time.sleep(0.5)
+    print("UWAGA: launcher nadal nie odpowiada - wysyłam dane mimo to.")
+    return False
+
 
 def send_cmd(obj, repeat=3):
     """Komenda JSON do launchera na RPi (UDP może zgubić pakiet, więc wysyłamy kilka razy)."""
@@ -307,6 +372,7 @@ def send_telemetry(sdk):
 def main():
     global sdk_instance
     try:
+        ensure_launcher()
         print(f"Przełączanie Raspberry Pi ({RPI_IP}) na dashboard...")
         send_cmd({"cmd": "mode", "mode": "dashboard"})
         if THEME:
