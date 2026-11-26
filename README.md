@@ -148,15 +148,19 @@ ledd, port **5006**:
 {"cmd": "get"}                                  // odpowiedź: {"state": {...}}
 ```
 
-## Film się tnie?
+## Film
 
-Na czas filmu launcher całkowicie zwalnia ekran, więc mpv ma go tylko dla siebie. Jeśli film nadal nie jest płynny:
-- **Pi 5 nie ma sprzętowego dekodera H.264**, jest tylko dla H.265/HEVC. Film 1080p H.264 Pi 5 zdekoduje programowo, ale 4K już nie. Najpewniej będzie przekodować film na PC do H.265:
-  `ffmpeg -i film.mp4 -c:v libx265 -crf 24 -preset medium -vf scale=-2:1080 -c:a aac film_hevc.mp4`
-  albo przynajmniej zmniejszyć rozdzielczość do rozdzielczości ekranu.
-- Na Pi 4 najlepiej działa H.264 do 1080p.
-- W `launcher.py` jest opcja `MPV_EXTRA_ARGS`, np. `["--vo=gpu-next"]` albo `["--hwdec=no"]`.
-- Test ręczny na RPi: `mpv --fs --hwdec=auto-safe ~/filmy/film.mp4`. Jeśli tak też się tnie, problemem jest plik albo sterowniki, a nie launcher.
+Film odtwarza **VLC** z tymi samymi parametrami co oryginalny `FILM.py`. VLC w Raspberry Pi OS jest przygotowane pod sprzętowe dekodowanie na RPi. Po wybraniu filmu przez około 2 sekundy widać czarny ekran „Ładowanie filmu…”, potem launcher oddaje odtwarzaczowi cały ekran.
+
+Film zamykasz podwójnym dotknięciem ekranu albo klawiszem ESC. Launcher czyta dotyk bezpośrednio z `/dev/input` (`python3-evdev`, grupa `input`).
+
+Ustawienia na górze `launcher.py`:
+- `FILM_PLAYER = "vlc"`: możesz zmienić na `"mpv"` albo `"auto"`,
+- `FILM_HANDOFF_DELAY`: czas czarnego ekranu,
+- `VLC_EXTRA_ARGS` / `MPV_EXTRA_ARGS`: dodatkowe parametry odtwarzacza.
+
+Jeśli film i tak się tnie, sprawdź kodek. Pi 5 dekoduje sprzętowo tylko H.265/HEVC, więc ciężki film H.264 albo 4K warto przekodować na PC:
+`ffmpeg -i film.mp4 -c:v libx265 -crf 24 -preset medium -vf scale=-2:1080 -c:a aac film_hevc.mp4`
 
 ## Diagnostyka
 

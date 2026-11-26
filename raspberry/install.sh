@@ -14,7 +14,7 @@ ME="$(id -un)"
 
 echo "==> Pakiety"
 sudo apt-get update
-sudo apt-get install -y python3-pygame python3-spidev mpv fonts-dejavu-core fonts-dejavu-extra fonts-dseg
+sudo apt-get install -y python3-pygame python3-spidev python3-evdev vlc mpv fonts-dejavu-core fonts-dejavu-extra fonts-dseg
 
 echo "==> Pliki -> $DEST"
 mkdir -p "$DEST" "$HOME/filmy"
@@ -24,7 +24,7 @@ chmod +x "$DEST/"*.py
 
 echo "==> SPI (dla taśmy WS2812 na GPIO10 / pin 19)"
 sudo raspi-config nonint do_spi 0
-sudo usermod -aG spi,gpio,video "$ME"
+sudo usermod -aG spi,gpio,video,input "$ME"
 
 BOOT=/boot/firmware
 [ -d "$BOOT" ] || BOOT=/boot

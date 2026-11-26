@@ -18,14 +18,21 @@ import fcntl
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
 
-os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okna, gdy mpv zabierze fokus
+os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okna, gdy odtwarzacz zabierze fokus
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
+
+try:
+    import evdev                      # odczyt dotyku podczas filmu (python3-evdev)
+    from evdev import ecodes
+except ImportError:
+    evdev = None
 
 import layouts as Lay
 import themes as T
@@ -41,7 +48,10 @@ AUTO_DASHBOARD = False                # True = w menu automatycznie przejdź do 
 DATA_TIMEOUT = 3.0                    # po tylu sekundach bez danych dashboard pokazuje "czekam na dane"
 FPS = 60                              # dashboard; menu i ustawienia odświeżają się rzadziej
 MENU_FPS = 30
-MPV_EXTRA_ARGS = []                   # np. ["--hwdec=no"] albo ["--vo=gpu-next"], jeśli film nadal się tnie
+FILM_PLAYER = "vlc"                   # "vlc" (zalecane na RPi - sprzętowe dekodowanie), "mpv" albo "auto"
+FILM_HANDOFF_DELAY = 2.0              # po ilu s od startu odtwarzacza launcher oddaje mu ekran
+VLC_EXTRA_ARGS = []
+MPV_EXTRA_ARGS = []
 LOG_FILE = os.path.expanduser("~/.cache/pi-launcher.log")
 SETTINGS_FILE = os.path.expanduser("~/.config/pi-launcher/settings.json")  # m.in. wybrana tarcza
 # ========================================================
@@ -296,6 +306,59 @@ class DashState:
             v.hist_speed.append(self.disp_speed / self.speed_scale if self.speed_scale else 0.0)
 
 
+class TouchWatcher:
+    """Podwójne dotknięcie / ESC podczas filmu, czytane prosto z /dev/input (działa z każdym odtwarzaczem)."""
+
+    def __init__(self):
+        self.devs = []
+        self.last_tap = 0.0
+        if evdev is None:
+            print("Brak python3-evdev - film zamkniesz tylko z PC lub klawiszem w odtwarzaczu")
+            return
+        for path in evdev.list_devices():
+            try:
+                dev = evdev.InputDevice(path)
+                keys = dev.capabilities().get(ecodes.EV_KEY, [])
+                if any(k in keys for k in (ecodes.BTN_TOUCH, ecodes.BTN_LEFT, ecodes.KEY_ESC)):
+                    self.devs.append(dev)
+                else:
+                    dev.close()
+            except Exception:
+                pass
+        # wyrzuć zaległe zdarzenia (np. dotknięcie, którym wybrano film)
+        self.exit_requested()
+        self.last_tap = 0.0
+
+    def exit_requested(self):
+        hit = False
+        for dev in self.devs:
+            try:
+                while True:
+                    ev = dev.read_one()
+                    if ev is None:
+                        break
+                    if ev.type != ecodes.EV_KEY or ev.value != 1:
+                        continue
+                    if ev.code in (ecodes.KEY_ESC, ecodes.KEY_Q):
+                        hit = True
+                    elif ev.code in (ecodes.BTN_TOUCH, ecodes.BTN_LEFT):
+                        now = time.time()
+                        if now - self.last_tap < 0.45:
+                            hit = True
+                        self.last_tap = now
+            except (BlockingIOError, OSError):
+                continue
+        return hit
+
+    def close(self):
+        for dev in self.devs:
+            try:
+                dev.close()
+            except Exception:
+                pass
+        self.devs = []
+
+
 def load_settings():
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -333,6 +396,8 @@ class App:
         self.thumbs = {}
         self.sample = Lay.sample_view()
         self.display_released = False
+        self.touch = None
+        self.film_started = 0.0
         self.dash_ui_until = 0.0          # przyciski na dashboardzie pokazują się po dotknięciu
         self.last_frame = time.time()
         self.warm_tasks = self.make_warm_tasks()
@@ -584,30 +649,46 @@ class App:
             self.film_page = 0
             self.mode = "film_list"
 
+    def player_command(self, path):
+        """Te same parametry co w oryginalnym FILM.py (tam działało płynnie)."""
+        vlc, mpv = shutil.which("cvlc"), shutil.which("mpv")
+        use_vlc = vlc and (FILM_PLAYER in ("vlc", "auto") or not mpv)
+        if use_vlc:
+            args = [vlc, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0"]
+            args.append("--loop" if FILM_LOOP else "--play-and-exit")
+            if FILM_MUTE:
+                args.append("--no-audio")
+            return args + VLC_EXTRA_ARGS + [path]
+        if mpv:
+            args = [mpv, "--fs", "--no-osc", "--no-osd-bar", "--cursor-autohide=always",
+                    f"--input-conf={MPV_INPUT_CONF}"]
+            if FILM_LOOP:
+                args.append("--loop=inf")
+            if FILM_MUTE:
+                args.append("--no-audio")
+            return args + MPV_EXTRA_ARGS + [path]
+        return None
+
     def play_film(self, path):
         self.stop_film()
-        args = ["mpv", "--fs", "--no-osc", "--no-osd-bar", "--osd-level=0",
-                "--cursor-autohide=always", "--hwdec=auto-safe", "--framedrop=vo",
-                "--no-terminal", f"--input-conf={MPV_INPUT_CONF}"]
-        if FILM_LOOP:
-            args.append("--loop=inf")
-        if FILM_MUTE:
-            args.append("--no-audio")
-        args += MPV_EXTRA_ARGS
-        args.append(path)
-        # Oddajemy cały ekran mpv: okno launchera znika na czas filmu, więc kompozytor
-        # nie musi składać dwóch pełnoekranowych okien (to dawało ~2 kl/s).
-        self.release_display()
-        try:
-            self.film_proc = subprocess.Popen(args)
-        except FileNotFoundError:
-            self.restore_display()
+        args = self.player_command(path)
+        if args is None:
             self.go_menu()
-            self.toast("Nie znaleziono mpv (sudo apt install mpv)")
+            self.toast("Brak odtwarzacza (sudo apt install vlc)")
             return
+        try:
+            self.film_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.go_menu()
+            self.toast(f"Nie można uruchomić filmu: {e}")
+            return
+        # Launcher na razie zostaje (czarny ekran "Ładowanie"), żeby nie było widać pulpitu.
+        # Po FILM_HANDOFF_DELAY zamyka swoje okno, a odtwarzacz ma cały ekran dla siebie.
+        self.film_started = time.time()
         self.film_name = os.path.basename(path)
         self.mode = "film_play"
-        print(f"Film: {path}")
+        self.touch = TouchWatcher()
+        print(f"Film: {' '.join(args)}")
 
     def release_display(self):
         if not self.display_released:
@@ -634,12 +715,15 @@ class App:
                     proc.kill()
                 except Exception:
                     pass
+        if getattr(self, "touch", None) is not None:
+            self.touch.close()
+            self.touch = None
         self.restore_display()
 
     def check_film(self):
         if self.film_proc is not None and self.film_proc.poll() is not None:
             self.film_proc = None
-            self.restore_display()
+            self.stop_film()                  # zamyka czytnik dotyku i przywraca okno launchera
             if self.mode == "film_play":
                 self.mode = "menu"
 
@@ -669,6 +753,8 @@ class App:
             self.dash_ui_until = time.time() + 4.0
             return
 
+        if self.mode == "film_play":
+            return
         for key, rect in self.slider_rects.items():
             if rect.inflate(0, int(H * 0.05)).collidepoint(pos):
                 self.active_slider = key
@@ -851,13 +937,10 @@ class App:
             screen.blit(s, s.get_rect(center=(W // 2, by + bh // 2)))
 
     def draw_film_play(self, now):
-        screen.fill(BG_COLOR)
-        s = render_fit(font_btn, f"Odtwarzanie: {self.film_name}", TEXT_COLOR, int(W * 0.9))
-        screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.35))))
-        s = font_small.render("Podwójne dotknięcie filmu lub ESC zamyka film", True, SUBTEXT_COLOR)
-        screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.48))))
-        self.button((W // 2 - int(W * 0.15), int(H * 0.60), int(W * 0.30), int(H * 0.14)),
-                    "ZATRZYMAJ", self.go_menu, color=REDLINE_COLOR)
+        screen.fill((0, 0, 0))
+        dots = "." * (1 + int(now * 3) % 3)
+        s = font_small.render(f"Ładowanie filmu{dots}", True, (90, 90, 100))
+        screen.blit(s, s.get_rect(center=(W // 2, H // 2)))
 
     def draw_themes(self, now):
         screen.fill(BG_COLOR)
@@ -961,10 +1044,18 @@ class App:
             self.check_film()
             self.led_flush(now)
 
+            if self.mode == "film_play" and self.film_proc is not None:
+                if self.touch is not None and self.touch.exit_requested():
+                    print("Film zatrzymany dotknięciem")
+                    self.go_menu()
+                    continue
+                if not self.display_released and now - self.film_started >= FILM_HANDOFF_DELAY:
+                    self.release_display()
+
             if self.display_released:
-                # film gra na całym ekranie - launcher tylko nasłuchuje komend i nic nie rysuje
+                # film gra na całym ekranie - launcher tylko nasłuchuje komend i dotyku, nic nie rysuje
                 self.last_frame = now
-                time.sleep(0.1)
+                time.sleep(0.05)
                 continue
 
             self.handle_events()
