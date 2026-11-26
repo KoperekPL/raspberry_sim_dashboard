@@ -27,6 +27,8 @@ os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")  # nie chowaj okn
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
+import themes as T
+
 # ===================== KONFIGURACJA =====================
 UDP_PORT = 5005                       # telemetria + komendy z PC
 LED_ADDR = ("127.0.0.1", 5006)        # demon ledd.py
@@ -38,6 +40,7 @@ AUTO_DASHBOARD = False                # True = w menu automatycznie przejdź do 
 DATA_TIMEOUT = 3.0                    # po tylu sekundach bez danych dashboard pokazuje "czekam na dane"
 FPS = 60
 LOG_FILE = os.path.expanduser("~/.cache/pi-launcher.log")
+SETTINGS_FILE = os.path.expanduser("~/.config/pi-launcher/settings.json")  # m.in. wybrana tarcza
 # ========================================================
 
 # Przy autostarcie nie ma terminala - zapisuj komunikaty do pliku
@@ -122,10 +125,6 @@ def make_font(name, size, bold=True):
     return pygame.font.SysFont(name, max(8, int(size)), bold=bold)
 
 
-font_ticks = make_font("dejavusans", H * 0.036)
-font_val = make_font("dejavusans", H * 0.082)
-font_unit = make_font("dejavusans", H * 0.034)
-font_lap = make_font("dejavusansmono", min(W * 0.023, H * 0.050))
 font_title = make_font("dejavusans", H * 0.075)
 font_btn = make_font("dejavusans", H * 0.060)
 font_small = make_font("dejavusans", H * 0.036)
@@ -234,89 +233,27 @@ class DashState:
         self.disp_speed += (self.target_speed - self.disp_speed) * 0.28
 
 
-def draw_timing_bar(cur_s, last_s, best_s):
-    bar_y = int(H * 0.070)
-    line_y = int(H * 0.130)
-    items = [
-        (int(W * 0.18), "CURRENT: ", format_lap_time(cur_s), TEXT_COLOR),
-        (int(W * 0.52), "LAST: ", format_lap_time(last_s), TEXT_COLOR),
-        (int(W * 0.83), "BEST: ", format_lap_time(best_s), BEST_COLOR if best_s > 0 else SUBTEXT_COLOR),
-    ]
-    for cx, label, val_str, val_color in items:
-        lbl_surf = font_lap.render(label, True, SUBTEXT_COLOR)
-        val_surf = font_lap.render(val_str, True, val_color)
-        total_w = lbl_surf.get_width() + val_surf.get_width()
-        start_x = cx - total_w // 2
-        y_top = bar_y - lbl_surf.get_height() // 2
-        screen.blit(lbl_surf, (start_x, y_top))
-        screen.blit(val_surf, (start_x + lbl_surf.get_width(), y_top))
-    pygame.draw.line(screen, DIVIDER_COLOR, (int(W * 0.04), line_y), (int(W * 0.96), line_y), 2)
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Nie można wczytać {SETTINGS_FILE}: {e}")
+        return {}
 
 
-def draw_gauge(cx, cy, radius, value, max_val, unit, step_major,
-               redline_start=None, accent=NEEDLE_COLOR, divide_tick_label=1):
-    pygame.draw.circle(screen, DIAL_BG, (cx, cy), radius)
-    pygame.draw.circle(screen, RING_COLOR, (cx, cy), radius, max(3, int(radius * 0.025)))
-
-    start_deg = 135.0
-    sweep_deg = 270.0
-
-    if redline_start is not None and max_val > 0 and redline_start < max_val:
-        red_start_frac = max(0.0, min(1.0, redline_start / max_val))
-        pts = []
-        steps = 24
-        r_outer = radius * 0.90
-        r_inner = radius * 0.80
-        for i in range(steps + 1):
-            f = red_start_frac + (1.0 - red_start_frac) * (i / steps)
-            ang = math.radians(start_deg + f * sweep_deg)
-            pts.append((cx + math.cos(ang) * r_outer, cy + math.sin(ang) * r_outer))
-        for i in range(steps, -1, -1):
-            f = red_start_frac + (1.0 - red_start_frac) * (i / steps)
-            ang = math.radians(start_deg + f * sweep_deg)
-            pts.append((cx + math.cos(ang) * r_inner, cy + math.sin(ang) * r_inner))
-        if len(pts) > 2:
-            pygame.draw.polygon(screen, REDLINE_COLOR, pts)
-
-    if max_val <= 0:
-        max_val = 1.0
-    num_major = max(1, int(round(max_val / step_major)))
-    sub_divs = 2
-    total_ticks = num_major * sub_divs
-
-    for i in range(total_ticks + 1):
-        frac = i / total_ticks
-        ang = math.radians(start_deg + frac * sweep_deg)
-        is_major = (i % sub_divs == 0)
-        tick_val = frac * max_val
-        color = REDLINE_COLOR if (redline_start and tick_val >= redline_start - 1e-6) else TEXT_COLOR
-        r_out = radius * 0.90
-        r_in = radius * (0.76 if is_major else 0.83)
-        x1, y1 = cx + math.cos(ang) * r_in, cy + math.sin(ang) * r_in
-        x2, y2 = cx + math.cos(ang) * r_out, cy + math.sin(ang) * r_out
-        pygame.draw.line(screen, color, (x1, y1), (x2, y2), 3 if is_major else 2)
-        if is_major:
-            r_txt = radius * 0.62
-            tx, ty = cx + math.cos(ang) * r_txt, cy + math.sin(ang) * r_txt
-            lbl_num = int(round(tick_val / divide_tick_label))
-            txt_surf = font_ticks.render(str(lbl_num), True, color)
-            screen.blit(txt_surf, txt_surf.get_rect(center=(tx, ty)))
-
-    val_str = f"{int(round(value)):,}".replace(",", " ")
-    val_surf = font_val.render(val_str, True, TEXT_COLOR)
-    screen.blit(val_surf, val_surf.get_rect(center=(cx, cy + radius * 0.47)))
-    u_surf = font_unit.render(unit, True, SUBTEXT_COLOR)
-    screen.blit(u_surf, u_surf.get_rect(center=(cx, cy + radius * 0.68)))
-
-    clamped = max(0.0, min(max_val, value))
-    needle_ang = math.radians(start_deg + (clamped / max_val) * sweep_deg)
-    nx = cx + math.cos(needle_ang) * (radius * 0.82)
-    ny = cy + math.sin(needle_ang) * (radius * 0.82)
-    bx = cx - math.cos(needle_ang) * (radius * 0.16)
-    by = cy - math.sin(needle_ang) * (radius * 0.16)
-    pygame.draw.line(screen, accent, (bx, by), (nx, ny), max(5, int(radius * 0.032)))
-    pygame.draw.circle(screen, (200, 210, 225), (cx, cy), max(10, int(radius * 0.07)))
-    pygame.draw.circle(screen, BG_COLOR, (cx, cy), max(5, int(radius * 0.035)))
+def save_settings(data):
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, SETTINGS_FILE)
+    except Exception as e:
+        print(f"Nie można zapisać ustawień: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +261,10 @@ def draw_gauge(cx, cy, radius, value, max_val, unit, step_major,
 # ---------------------------------------------------------------------------
 class App:
     def __init__(self):
-        self.mode = "menu"            # menu | dash | film_list | film_play | led
+        self.mode = "menu"            # menu | dash | film_list | film_play | led | themes
+        self.settings = load_settings()
+        self.theme = T.get_theme(self.settings.get("theme", T.DEFAULT_THEME))
+        self.themes_return = "menu"
         self.running = True
         self.dash = DashState()
         self.last_data = 0.0
@@ -465,6 +405,12 @@ class App:
                     self.open_films()
             elif target == "menu":
                 self.go_menu()
+        elif cmd == "theme":
+            name = str(pkt.get("name", ""))
+            if name in ("next", "prev"):
+                self.cycle_theme(1 if name == "next" else -1)
+            elif name in T.THEME_BY_NAME:
+                self.set_theme(name)
         elif cmd == "stop":
             if (target == "dashboard" and self.mode == "dash") or \
                (target == "film" and self.mode == "film_play"):
@@ -486,6 +432,23 @@ class App:
     def go_led(self):
         self.mode = "led"
         self.led_raw({"cmd": "get"})
+
+    def open_themes(self, back):
+        self.themes_return = back
+        self.mode = "themes"
+
+    def set_theme(self, name, close=False):
+        self.theme = T.get_theme(name)
+        self.settings["theme"] = self.theme["name"]
+        save_settings(self.settings)
+        print(f"Tarcza: {self.theme['name']}")
+        if close:
+            self.mode = self.themes_return
+
+    def cycle_theme(self, step):
+        names = [t["name"] for t in T.THEMES]
+        i = names.index(self.theme["name"]) if self.theme["name"] in names else 0
+        self.set_theme(names[(i + step) % len(names)])
 
     def scan_videos(self):
         try:
@@ -693,6 +656,8 @@ class App:
         bw, bh = int(W * 0.20), int(H * 0.10)
         by = int(H * 0.74)
         self.button((x0, by, bw, bh), "PULPIT", self.quit_to_desktop, font=font_small)
+        self.button(((W - bw) // 2, by, bw, bh), "TARCZE", lambda: self.open_themes("menu"),
+                    color=ACCENT_BLUE, font=font_small, sub=self.theme["label"].lower())
         confirm = now < self.confirm_off_until
         self.button((W - x0 - bw, by, bw, bh), "NA PEWNO?" if confirm else "WYŁĄCZ",
                     self.power_off, color=REDLINE_COLOR, font=font_small, active=confirm)
@@ -704,20 +669,21 @@ class App:
         screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.94))))
 
     def draw_dash(self, now):
-        screen.fill(BG_COLOR)
+        th = self.theme
+        screen.fill(th["bg"])
         d = self.dash
-        draw_timing_bar(d.current_lap, d.last_lap, d.best_lap)
-        radius = int(min(W * 0.225, H * 0.40))
+        T.draw_timing_bar(screen, th, d.current_lap, d.last_lap, d.best_lap, format_lap_time)
+        radius = int(min(W * 0.21, H * 0.38))
         center_y = int(H * 0.56)
-        draw_gauge(int(W * 0.26), center_y, radius, value=d.disp_rpm, max_val=d.rpm_scale,
-                   unit="RPM", step_major=d.rpm_step, redline_start=d.rpm_redline,
-                   accent=NEEDLE_COLOR, divide_tick_label=1000)
-        draw_gauge(int(W * 0.74), center_y, radius, value=d.disp_speed, max_val=d.speed_scale,
-                   unit=d.speed_unit, step_major=d.speed_step, redline_start=None,
-                   accent=ACCENT_BLUE, divide_tick_label=1)
+        T.draw_gauge(screen, th, int(W * 0.26), center_y, radius, d.disp_rpm, d.rpm_scale,
+                     "RPM", d.rpm_step, redline=d.rpm_redline, kind="rpm", divide=1000)
+        T.draw_gauge(screen, th, int(W * 0.74), center_y, radius, d.disp_speed, d.speed_scale,
+                     d.speed_unit, d.speed_step, redline=None, kind="speed", divide=1)
 
-        self.button((int(W * 0.01), int(H * 0.89), int(W * 0.12), int(H * 0.09)),
-                    "< MENU", self.go_menu, font=font_tiny)
+        bw, bh = int(W * 0.12), int(H * 0.09)
+        self.button((int(W * 0.01), int(H * 0.89), bw, bh), "< MENU", self.go_menu, font=font_tiny)
+        self.button((W - bw - int(W * 0.01), int(H * 0.89), bw, bh), "TARCZA",
+                    lambda: self.open_themes("dash"), font=font_tiny)
 
         if now - self.last_data > DATA_TIMEOUT:
             s = font_small.render(f"Czekam na dane z PC (UDP :{UDP_PORT})...", True, ACCENT_ORANGE)
@@ -764,6 +730,37 @@ class App:
         screen.blit(s, s.get_rect(center=(W // 2, int(H * 0.48))))
         self.button((W // 2 - int(W * 0.15), int(H * 0.60), int(W * 0.30), int(H * 0.14)),
                     "ZATRZYMAJ", self.go_menu, color=REDLINE_COLOR)
+
+    def draw_themes(self, now):
+        screen.fill(BG_COLOR)
+        m = int(W * 0.03)
+        self.button((m, int(H * 0.02), int(W * 0.15), int(H * 0.095)), "< WSTECZ",
+                    lambda: setattr(self, "mode", self.themes_return), font=font_small)
+        title = font_title.render("TARCZE ZEGARÓW", True, TEXT_COLOR)
+        screen.blit(title, title.get_rect(center=(W // 2, int(H * 0.07))))
+
+        cols = 5
+        rows = math.ceil(len(T.THEMES) / cols)
+        gap = int(W * 0.015)
+        y0 = int(H * 0.15)
+        tw = (W - 2 * m - gap * (cols - 1)) // cols
+        th_h = (H - y0 - m - gap * (rows - 1)) // rows
+        # wskazówka "pracuje" w podglądzie
+        demo = 5200 + 2600 * (0.5 - 0.5 * math.cos(now * 1.3))
+        for i, theme in enumerate(T.THEMES):
+            col, row = i % cols, i // cols
+            rect = pygame.Rect(m + col * (tw + gap), y0 + row * (th_h + gap), tw, th_h)
+            pygame.draw.rect(screen, theme["bg"], rect, border_radius=10)
+            label_h = font_tiny.get_height() + 8
+            r = int(min(tw * 0.40, (th_h - label_h) * 0.42))
+            T.draw_gauge(screen, theme, rect.centerx, rect.y + 6 + int(r * 1.12), r, demo, 10000,
+                         "RPM", 2000, redline=8500, kind="rpm", divide=1000)
+            selected = theme["name"] == self.theme["name"]
+            lbl = render_fit(font_tiny, theme["label"], ACCENT_BLUE if selected else TEXT_COLOR, rect.w - 8)
+            screen.blit(lbl, lbl.get_rect(midbottom=(rect.centerx, rect.bottom - 4)))
+            pygame.draw.rect(screen, ACCENT_BLUE if selected else RING_COLOR, rect,
+                             4 if selected else 1, border_radius=10)
+            self.hits.append((rect, lambda n=theme["name"]: self.set_theme(n, close=True)))
 
     def draw_led(self, now):
         screen.fill(BG_COLOR)
@@ -846,6 +843,7 @@ class App:
                 "film_list": self.draw_film_list,
                 "film_play": self.draw_film_play,
                 "led": self.draw_led,
+                "themes": self.draw_themes,
             }[self.mode]
             draw(now)
             self.draw_toast(now)

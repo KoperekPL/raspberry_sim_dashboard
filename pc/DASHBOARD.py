@@ -10,6 +10,10 @@ RPI_IP = "192.168.50.2"
 RPI_PORT = 5005
 SEND_HZ = 60
 
+# Tarcza zegarów ustawiana przy starcie (puste = zostaw tę wybraną na RPi).
+# Dostępne: modern, vintage, classic, sport, marine, neon, carbon, digital, minimal, night
+THEME = ""
+
 # Jeśli prędkość na zegarze będzie ok. 2.24x mniejsza niż na HUD w grze,
 # zmień poniższą wartość na 2.23694 (przeliczenie z m/s na MPH).
 SPEED_MULTIPLIER = 1.0
@@ -274,6 +278,8 @@ def main():
     try:
         print(f"Przełączanie Raspberry Pi ({RPI_IP}) na dashboard...")
         send_cmd({"cmd": "mode", "mode": "dashboard"})
+        if THEME:
+            send_cmd({"cmd": "theme", "name": THEME})
         sdk_instance = HydroSimSDK()
         print(f"Start HydroSim -> UDP {RPI_IP}:{RPI_PORT} (Ctrl+C lub X kończy i wraca RPi do menu)")
         sdk_instance.start()

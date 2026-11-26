@@ -11,7 +11,7 @@ Po włączeniu RPi pokazuje się menu: **DASHBOARD / FILM / LEDY**. Filmy i LEDy
 | | Raspberry Pi (`raspberry/`) | PC z Windows (`pc/`) |
 |---|---|---|
 | Menu startowe | `launcher.py` (autostart po zalogowaniu) | – |
-| Dashboard | rysowany w `launcher.py`, dane UDP :5005 | `DASHBOARD.py` czyta HydroSim i wysyła telemetrię |
+| Dashboard | rysowany w `launcher.py` + tarcze z `themes.py`, dane UDP :5005 | `DASHBOARD.py` czyta HydroSim i wysyła telemetrię |
 | Film | `launcher.py` + `mpv`, pliki z `~/filmy` | `FILM.py` – opcjonalny pilot |
 | LEDy | `ledd.py` – usługa systemd, działa od startu | `LED.py` – opcjonalne sterowanie z konsoli |
 
@@ -72,6 +72,23 @@ Działa na Pi 3, 4 i 5. Używa SPI, więc nie potrzebuje roota i nie koliduje z 
 
 W każdym skrypcie ustaw `RPI_IP`. Zapora Windows musi przepuszczać wychodzące UDP (zwykle przepuszcza).
 
+## Tarcze zegarów
+
+Do wyboru jest 10 tarcz: **NOWOCZESNA, VINTAGE, KLASYCZNA, SPORT, MARINE, RETRO NEON, CARBON, CYFROWA, MINIMAL, NOCNA**.
+
+![tarcze](docs/themes.png)
+
+Tarczę zmieniasz:
+- w menu przyciskiem **TARCZE**,
+- w dashboardzie przyciskiem **TARCZA** (prawy dolny róg),
+- z PC: ustaw `THEME = "vintage"` w `DASHBOARD.py` albo wyślij `{"cmd": "theme", "name": "vintage"}` (zamiast nazwy możesz podać `"next"` lub `"prev"`).
+
+Wybór zapisuje się w `~/.config/pi-launcher/settings.json`.
+
+![wybór tarczy](docs/picker.png)
+
+Własną tarczę dodajesz, dopisując słownik do listy `THEMES_OVERRIDES` w `themes.py`. Każdy parametr z `BASE` jest tam opisany: rodzaj tarczy (`flat` / `radial` / `carbon`), obręcz (`ring` / `chrome` / `brass` / `glow`), wskazówka (`line` / `taper` / `thin` / `glow`), łuk zamiast wskazówki (`progress` / `segments`), czcionki i kolory. Statyczna część zegara rysuje się raz i trafia do cache, więc nawet efektowne tarcze nie obciążają RPi.
+
 ## Tryby LED
 
 `WYŁĄCZ`, `STAŁY`, `ODDECH`, `TĘCZA`, `CYKL KOLORÓW`, `KOMETA`, `ISKRY`, `OGIEŃ`, `POLICJA` oraz **`OBROTY (RPM)`**. Ten ostatni to shift-light: w trybie dashboardu pasek rośnie z obrotami (zielony → żółty → czerwony) i miga na niebiesko przy redline. Bez danych z PC delikatnie świeci wybranym kolorem.
@@ -85,6 +102,7 @@ Launcher, port **5005**:
 {"rpm": 6500, "max_rpm": 9000, "speed": 87, "unit": "MPH", "current_lap": 42.3, "last_lap": 61.2, "best_lap": 60.9}
 {"cmd": "mode", "mode": "dashboard"}            // też "film" (+ opcjonalnie "file") i "menu"
 {"cmd": "stop", "mode": "dashboard"}            // wraca do menu tylko, jeśli ten tryb jest aktywny
+{"cmd": "theme", "name": "vintage"}             // albo "next" / "prev"
 ```
 ledd, port **5006**:
 ```json

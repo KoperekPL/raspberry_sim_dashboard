@@ -18,7 +18,7 @@ sudo apt-get install -y python3-pygame python3-spidev mpv fonts-dejavu-core
 
 echo "==> Pliki -> $DEST"
 mkdir -p "$DEST" "$HOME/filmy"
-cp "$SRC/launcher.py" "$SRC/ledd.py" "$DEST/"
+cp "$SRC/launcher.py" "$SRC/themes.py" "$SRC/ledd.py" "$DEST/"
 [ -f "$SRC/../pc/LED.py" ] && cp "$SRC/../pc/LED.py" "$DEST/" || true   # LED.py przyda się też na samym RPi
 chmod +x "$DEST/"*.py
 
