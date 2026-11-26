@@ -57,6 +57,8 @@ FILM_HANDOFF_DELAY = 2.0              # mpv: po ilu s launcher oddaje ekran
 FILM_HANDOFF_MAX = 30.0               # VLC: launcher czeka, aż film naprawdę gra (max tyle sekund)
 FILM_WARMUP = True                    # przy starcie raz "na próbę" odpal film (małe okno, bez dźwięku)
 VLC_SOCK = "/tmp/pi-launcher-vlc.sock"
+VLC_LOG = os.path.expanduser("~/.cache/vlc.log")   # ostrzeżenia VLC (np. gubione klatki) - do diagnozy
+VLC_CACHING_MS = 1500                 # bufor odczytu pliku; większy = mniej szarpnięć przy wolnej karcie SD
 VLC_EXTRA_ARGS = []
 MPV_EXTRA_ARGS = []
 LOG_FILE = os.path.expanduser("~/.cache/pi-launcher.log")
@@ -407,6 +409,8 @@ class App:
         self.film_proc_started = 0.0
         self.film_path = None
         self.film_fails = 0
+        self.film_active = False
+        self.film_frame_drawn = False
         self.film_uses_rc = False
         self.vlc_rc = True
         self.last_rc_poll = 0.0
@@ -673,7 +677,7 @@ class App:
             for v in videos:
                 try:
                     with open(v, "rb", buffering=0) as fh:
-                        while True:
+                        while not self.film_active:          # film ruszył - nie konkuruj z VLC o kartę SD
                             chunk = fh.read(8 << 20)
                             if not chunk:
                                 break
@@ -771,7 +775,9 @@ class App:
         vlc, mpv = shutil.which("cvlc"), shutil.which("mpv")
         use_vlc = vlc and (FILM_PLAYER in ("vlc", "auto") or not mpv)
         if use_vlc:
-            args = [vlc, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0"]
+            args = [vlc, "--fullscreen", "--no-video-title-show", "--no-osd", "--mouse-hide-timeout=0",
+                    f"--file-caching={VLC_CACHING_MS}",
+                    "--file-logging", f"--logfile={VLC_LOG}", "--log-verbose=2"]
             if FILM_LOOP:
                 # --input-repeat: ten sam plik od nowa w tym samym oknie (bez zamykania obrazu)
                 args += ["--loop", "--input-repeat=65535"]
@@ -799,7 +805,13 @@ class App:
 
     def play_film(self, path):
         self.stop_film()
+        self.film_active = True
+        self.film_frame_drawn = False
         self.kill_warm_player()
+        try:
+            os.unlink(VLC_LOG)
+        except OSError:
+            pass
         args = self.player_command(path)
         if args is None:
             self.go_menu()
@@ -880,6 +892,7 @@ class App:
         if getattr(self, "touch", None) is not None:
             self.touch.close()
             self.touch = None
+        self.film_active = False
         self.restore_display()
 
     def check_film(self):
@@ -1114,8 +1127,7 @@ class App:
 
     def draw_film_play(self, now):
         screen.fill((0, 0, 0))
-        dots = "." * (1 + int(now * 3) % 3)
-        s = font_small.render(f"Ładowanie filmu{dots}", True, (90, 90, 100))
+        s = font_small.render("Ładowanie filmu...", True, (90, 90, 100))
         screen.blit(s, s.get_rect(center=(W // 2, H // 2)))
 
     def draw_themes(self, now):
@@ -1256,6 +1268,11 @@ class App:
                 self.last_rpm_fwd = now
                 self.led_raw({"cmd": "rpm", "rpm": self.dash.target_rpm, "redline": self.dash.rpm_redline})
 
+            if self.mode == "film_play" and self.film_frame_drawn:
+                # czarny ekran już jest - nie odświeżaj go pod oknem VLC (mniej pracy dla kompozytora)
+                time.sleep(0.05)
+                continue
+
             self.hits = []
             self.slider_rects = {}
             draw = {
@@ -1276,6 +1293,8 @@ class App:
                 refresh_screen()
                 time.sleep(0.05)
             self.last_frame = now
+            if self.mode == "film_play":
+                self.film_frame_drawn = True
 
             if self.preload_pending:
                 # najpierw grafika (pasek postępu), dopiero potem w tle film/VLC - nie równocześnie

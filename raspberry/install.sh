@@ -54,6 +54,7 @@ SupplementaryGroups=spi gpio
 ExecStart=/usr/bin/python3 $DEST/ledd.py
 Restart=always
 RestartSec=2
+Nice=10
 
 [Install]
 WantedBy=multi-user.target
